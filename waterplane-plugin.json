@@ -1,0 +1,22 @@
+{
+  "id": "copilot",
+  "name": "GitHub Copilot CLI",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "description": "Adds GitHub Copilot CLI (measured on 1.0.91) as a backend the launcher can spawn. Its lifecycle hooks reach the daemon through this plugin's loopback sink; nothing is written to ~/.copilot or to the repo.",
+  "backends": ["copilot"],
+  "env": ["COPILOT_CLI_BIN", "COPILOT_HOME"],
+  "settings": [
+    {
+      "kind": "number",
+      "key": "holdMs",
+      "label": "Permission hold",
+      "note": "How long a Copilot permission request waits for a tap on the phone before Copilot shows its own dialog in the terminal. Kept below the hook's own timeout so Copilot never kills the hook.",
+      "default": 8000,
+      "min": 0,
+      "max": 30000,
+      "step": 500,
+      "unit": "ms"
+    }
+  ]
+}

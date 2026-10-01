@@ -1,0 +1,10 @@
+{
+ "sessionId": "2dd08105-5de0-4902-9e93-8d55349bf8e7",
+ "timestamp": 1790885516588,
+ "cwd": "/tmp/wp0-copilot/repo",
+ "message": "Run command: touch c1.txt && echo done",
+ "title": "Permission needed",
+ "hook_event_name": "Notification",
+ "notification_type": "permission_prompt",
+ "traceparent": "00-11f47e692dfa6e7df8b49bcc90d6780d-1cc3e537f6f3c363-01"
+}

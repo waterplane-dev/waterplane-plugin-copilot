@@ -1,0 +1,9 @@
+{
+ "sessionId": "2dd08105-5de0-4902-9e93-8d55349bf8e7",
+ "timestamp": 1790885497804,
+ "cwd": "/tmp/wp0-copilot/repo",
+ "transcriptPath": "/home/user/.copilot/session-state/2dd08105-5de0-4902-9e93-8d55349bf8e7/events.jsonl",
+ "stopReason": "end_turn",
+ "stop_hook_active": false,
+ "traceparent": "00-f876090f77302b3a3f7a1a4e41c10548-f61d26abc4812710-01"
+}

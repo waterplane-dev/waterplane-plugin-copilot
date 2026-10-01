@@ -1,0 +1,11 @@
+{
+ "sessionId": "2dd08105-5de0-4902-9e93-8d55349bf8e7",
+ "timestamp": 1790885494767,
+ "cwd": "/tmp/wp0-copilot/repo",
+ "toolName": "bash",
+ "toolArgs": {
+  "command": "touch c0.txt && echo done",
+  "description": "Create c0.txt and print done"
+ },
+ "traceparent": "00-f876090f77302b3a3f7a1a4e41c10548-f61d26abc4812710-01"
+}

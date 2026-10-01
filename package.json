@@ -1,0 +1,16 @@
+{
+  "name": "usmc-plugin-copilot",
+  "version": "0.1.0",
+  "description": "GitHub Copilot CLI as a backend: a plugin for the phone remote that drives coding CLIs in a PTY (see README.md).",
+  "type": "module",
+  "private": true,
+  "main": "host.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "e2e": "node scripts/e2e-host.mjs"
+  },
+  "license": "MIT"
+}

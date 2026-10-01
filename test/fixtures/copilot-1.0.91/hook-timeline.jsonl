@@ -1,0 +1,36 @@
+{"ev": "userPromptSubmitted", "pid": 40295, "t0": 1790885492698, "phase": "start"}
+{"ev": "userPromptSubmitted", "pid": 40295, "t0": 1790885492698, "phase": "end", "t1": 1790885492698, "held": 0, "mode": ""}
+{"ev": "sessionStart", "pid": 40301, "t0": 1790885492798, "phase": "start"}
+{"ev": "sessionStart", "pid": 40301, "t0": 1790885492798, "phase": "end", "t1": 1790885492798, "held": 0, "mode": ""}
+{"ev": "preToolUse", "pid": 40651, "t0": 1790885494822, "phase": "start"}
+{"ev": "preToolUse", "pid": 40651, "t0": 1790885494822, "phase": "end", "t1": 1790885494822, "held": 0, "mode": ""}
+{"ev": "permissionRequest", "pid": 40658, "t0": 1790885494897, "phase": "start"}
+{"ev": "permissionRequest", "pid": 40658, "t0": 1790885494897, "phase": "end", "t1": 1790885496900, "held": 2, "mode": "allow"}
+{"ev": "postToolUse", "pid": 40906, "t0": 1790885496982, "phase": "start"}
+{"ev": "postToolUse", "pid": 40906, "t0": 1790885496982, "phase": "end", "t1": 1790885496982, "held": 0, "mode": ""}
+{"ev": "agentStop", "pid": 41364, "t0": 1790885497862, "phase": "start"}
+{"ev": "agentStop", "pid": 41364, "t0": 1790885497862, "phase": "end", "t1": 1790885497862, "held": 0, "mode": ""}
+{"ev": "userPromptSubmitted", "pid": 42538, "t0": 1790885510377, "phase": "start"}
+{"ev": "userPromptSubmitted", "pid": 42538, "t0": 1790885510377, "phase": "end", "t1": 1790885510378, "held": 0, "mode": ""}
+{"ev": "preToolUse", "pid": 42695, "t0": 1790885511473, "phase": "start"}
+{"ev": "preToolUse", "pid": 42695, "t0": 1790885511473, "phase": "end", "t1": 1790885511474, "held": 0, "mode": ""}
+{"ev": "permissionRequest", "pid": 42696, "t0": 1790885511532, "phase": "start"}
+{"ev": "permissionRequest", "pid": 42696, "t0": 1790885511532, "phase": "killed", "signal": "SIGTERM", "t1": 1790885516584}
+{"ev": "notification", "pid": 42896, "t0": 1790885516642, "phase": "start"}
+{"ev": "notification", "pid": 42896, "t0": 1790885516642, "phase": "end", "t1": 1790885516642, "held": 0, "mode": ""}
+{"ev": "postToolUse", "pid": 45825, "t0": 1790885520167, "phase": "start"}
+{"ev": "postToolUse", "pid": 45825, "t0": 1790885520167, "phase": "end", "t1": 1790885520167, "held": 0, "mode": ""}
+{"ev": "agentStop", "pid": 46359, "t0": 1790885520961, "phase": "start"}
+{"ev": "agentStop", "pid": 46359, "t0": 1790885520961, "phase": "end", "t1": 1790885520961, "held": 0, "mode": ""}
+{"ev": "sessionEnd", "pid": 46807, "t0": 1790885524086, "phase": "start"}
+{"ev": "sessionEnd", "pid": 46807, "t0": 1790885524086, "phase": "end", "t1": 1790885524086, "held": 0, "mode": ""}
+{"ev": "sessionEnd", "pid": 48924, "t0": 1790885540120, "phase": "start"}
+{"ev": "sessionEnd", "pid": 48924, "t0": 1790885540120, "phase": "end", "t1": 1790885540120, "held": 0, "mode": ""}
+{"ev": "userPromptSubmitted", "pid": 49527, "t0": 1790885544019, "phase": "start"}
+{"ev": "userPromptSubmitted", "pid": 49527, "t0": 1790885544019, "phase": "end", "t1": 1790885544019, "held": 0, "mode": ""}
+{"ev": "sessionStart", "pid": 49534, "t0": 1790885544090, "phase": "start"}
+{"ev": "sessionStart", "pid": 49534, "t0": 1790885544090, "phase": "end", "t1": 1790885544090, "held": 0, "mode": ""}
+{"ev": "agentStop", "pid": 49994, "t0": 1790885546849, "phase": "start"}
+{"ev": "agentStop", "pid": 49994, "t0": 1790885546849, "phase": "end", "t1": 1790885546849, "held": 0, "mode": ""}
+{"ev": "sessionEnd", "pid": 50317, "t0": 1790885550055, "phase": "start"}
+{"ev": "sessionEnd", "pid": 50317, "t0": 1790885550055, "phase": "end", "t1": 1790885550056, "held": 0, "mode": ""}
