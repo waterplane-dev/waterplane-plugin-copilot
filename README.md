@@ -54,12 +54,22 @@ Copilot never kills a hook the daemon is still answering.
   into it; `/context`, `/usage`, `/env` and the other UI-only slash commands are known to start no
   turn.
 
+- **Reader transcript.** `events.jsonl` folded by `interactionId` (one turn per prompt): prompt =
+  `user.message.content`, assistant text, tool calls with input and output; the other ~150 event
+  types are ignored. Read by byte offset, so a long session is not re-parsed per poll.
+- **Delivery proof.** The same fold answers `landed` / `userTurns` from `user.message` events.
+- **AI credits.** `GET /api/tokenstats/copilot`: credits from `session.usage_checkpoint`
+  (`totalNanoAiu / 1e9`, spend = delta between checkpoints) in their own unit, beside tokens per
+  model from the OTel `chat` spans (input uncached / cache read / cache write / output). Nothing
+  on disk is `available: false` with a sentence, never zeros.
+- **Context fill.** The last `chat` span's input tokens. The window is not claimed (Copilot only
+  prints it on `/context`).
+
 ## Not yet (and why)
 
 | | status |
 |---|---|
 | Answering Copilot's permission dialog from the phone | next (WP4b). Today the hook answers `{}` at once, so Copilot shows its own dialog in the terminal and the phone says to answer it at the desk. The design: hold the hook up to 8 s for a tap, else fall through to the dialog and answer it with the digit (measured: `1` alone, no Return) |
-| Reader transcript, AI-credit ledger, context fill | WP4c: `events.jsonl` fold, `session.usage_checkpoint` (credits = `totalNanoAiu / 1e9`), OTel `chat` spans |
 | Model list | none on purpose: the account measured offers only Auto; other plans offer more, and a guessed list is worse than a free-text field |
 | `--no-remote` | not passed: no such literal in the 1.0.91 binary (only `--remote` / `--no-remote-export`), and an option the CLI rejects kills the launch |
 | `--effort`, `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | from Copilot's own help/changelog, not yet exercised by a probe (WP4d) |
@@ -75,7 +85,8 @@ Copilot never kills a hook the daemon is still answering.
 | `hooks.mjs`, `hook/post.mjs` | the generated `--plugin-dir` plugin and the runner its hooks invoke |
 | `delivery.mjs` | the composer / trust / slash literals |
 | `router.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | which session a hook belongs to; turn edges; channel health off the session lock |
-| `dialogs.mjs`, `transcript.mjs`, `ledger.mjs`, `context.mjs` | seams for WP4b/WP4c, their interfaces written down |
+| `dialogs.mjs` | the permission dialog source (WP4b) |
+| `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `tail.mjs` | the fold + delivery proof, the AI-credit ledger, the context sample, the OTel `chat` span reader, the byte-offset JSONL tail |
 | `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, the numbered permission dialog |
 
 ## Tests

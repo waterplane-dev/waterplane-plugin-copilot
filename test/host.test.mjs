@@ -39,6 +39,8 @@ test("activate registers exactly the backend the manifest declares, and writes t
   assert.equal(def.caps.promptBoxes, false);
   assert.equal(typeof def.sources.turns.watch, "function");
   assert.equal(def.sources.dialogs, undefined, "no dialog source until WP4b");
+  assert.equal(def.caps.transcript, "none", "the host asks sources.transcript exactly when no core reader is named");
+  for (const k of ["transcript", "delivery", "tokens", "context"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
   assert.equal(api._hook.opts.maxHoldMs, 8000);
   const hooks = JSON.parse(readFileSync(join(api.dataDir, "copilot-plugin", "hooks.json"), "utf8")).hooks;
   assert.equal(hooks.permissionRequest[0].timeoutSec, 10);

@@ -1,14 +1,30 @@
 /**
- * How full the context is — the `ContextSource`. SEAM for WP4c.
+ * How full the context is (`ContextSource`): the last `chat` span's
+ * `gen_ai.usage.input_tokens` — the whole prompt of the newest model call, the
+ * number the window gauge would measure — from this session's OTel file.
  *
- * Not registered in WP4a. WP4c implements:
+ *   createContextSource({ otelDir, idOf? }) → { sample(ss): SourceContextSample | null }
  *
- *   createContextSource({ otelDir }) → { sample(ss): SourceContextSample | null }
- *
- * `usedTok` = the last `chat` span's `gen_ai.usage.input_tokens` in this
- * launch's OTel file, `model` = its `gen_ai.response.model`. The WINDOW is not
- * this source's to say (and Copilot persists none: `/context` prints
- * `17k/128k`, `session.usage_info` is ephemeral), so the host keeps it absent.
- * Open (design §9.6): the OTel file's flush latency as a live source.
+ * The WINDOW is not this source's to say: Copilot shows it only on `/context`
+ * (`17k/128k`) and `session.usage_info` is ephemeral, so the host keeps it
+ * absent. No span for this session yet (or an unreadable file) ⇒ null.
+ * Open (design §9.6): the exporter's flush latency — a sample may trail the
+ * live TUI by a flush; `at` is the span's end time so the lag is visible.
  */
-export {};
+import { createOtelReader } from "./otel.mjs";
+import { SESSION_ID_RE } from "./paths.mjs";
+
+export function createContextSource({ otelDir, idOf } = {}) {
+  const otel = createOtelReader(otelDir);
+  return {
+    sample(ss) {
+      let id;
+      try { id = (idOf ? idOf(ss) : ss?.backendSessionId) || ss?.backendSessionId; } catch { id = undefined; }
+      if (typeof id !== "string" || !SESSION_ID_RE.test(id)) return null;
+      otel.refresh();
+      const c = otel.last(id.toLowerCase());
+      if (!c || c.input == null || c.at == null) return null;
+      return { at: c.at, usedTok: c.input, ...(c.model ? { model: c.model } : {}) };
+    },
+  };
+}
