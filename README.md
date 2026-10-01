@@ -25,9 +25,9 @@ that it is not. MIT licensed.
 Environment (both optional): `COPILOT_CLI_BIN` — the binary to run (default: the first `copilot`
 on `PATH`); `COPILOT_HOME` — Copilot's state dir (default `~/.copilot`).
 
-Setting: **Permission hold** (default 8 s) — reserved for the phone answering Copilot's permission
-requests (next milestone). The hook timeout written for Copilot is always at least 2 s longer, so
-Copilot never kills a hook the daemon is still answering.
+Setting: **Permission hold** (default 8 s) — how long a Copilot permission request waits for a tap
+on the phone before Copilot shows its own dialog in the terminal. The hook timeout written for
+Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon is still answering.
 
 ## What it does today
 
@@ -54,6 +54,22 @@ Copilot never kills a hook the daemon is still answering.
   into it; `/context`, `/usage`, `/env` and the other UI-only slash commands are known to start no
   turn.
 
+- **Permission dialogs on the phone.** Copilot's `permissionRequest` hook is HELD (the setting
+  above) and the request appears on the phone as a box: the command, Copilot's own description of
+  it, and the dialog's three options. Its id is the tool call's own `toolCallId` (read from
+  `tool.execution_start`, which Copilot writes before the hook runs). A tap goes through the
+  daemon's one answer path and answers the hook: **Yes** ⇒ `{behavior:"allow"}`, **No** ⇒
+  `{behavior:"deny", message}`. **Option 2 ("don't ask again") tapped during the hold allows this
+  command ONCE** — the hook protocol has no "remember" answer; the option says so on the phone, and
+  at the terminal dialog it is the real thing. No tap in time ⇒ the daemon answers `{}`, Copilot
+  shows its own numbered dialog, and the SAME box stays on the phone; its answer is then the digit
+  alone (no Return, measured), pressed only once `events.jsonl` shows that dialog is up —
+  **but the daemon's plugin API has no keystroke route yet**, so on today's host that tap is
+  refused with a sentence ("answer it at the terminal: 1, 2 or 3"), nothing typed.
+  `permission.completed` retires the box whoever answered; requests a hook decided
+  (`resolvedByHook`) never become boxes. A non-shell tool's request is answered by the hook (Yes /
+  No); its terminal dialog was never measured, so past the hold it is answered at the desk. While
+  the side channel is down there are no boxes (`pending()` says "cannot say").
 - **Reader transcript.** `events.jsonl` folded by `interactionId` (one turn per prompt): prompt =
   `user.message.content`, assistant text, tool calls with input and output; the other ~150 event
   types are ignored. Read by byte offset, so a long session is not re-parsed per poll.
@@ -69,7 +85,8 @@ Copilot never kills a hook the daemon is still answering.
 
 | | status |
 |---|---|
-| Answering Copilot's permission dialog from the phone | next (WP4b). Today the hook answers `{}` at once, so Copilot shows its own dialog in the terminal and the phone says to answer it at the desk. The design: hold the hook up to 8 s for a tap, else fall through to the dialog and answer it with the digit (measured: `1` alone, no Return) |
+| Answering Copilot's TERMINAL dialog from the phone (after the hold ran out) | needs a host API to press a key in a plugin's own session (`api.input(sessionId, keys)` is used as soon as a host offers it). Until then that tap is refused in words |
+| "Don't ask again" from the phone during the hold | the hook protocol has only allow/deny: allows once, and says so |
 | Model list | none on purpose: the account measured offers only Auto; other plans offer more, and a guessed list is worse than a free-text field |
 | `--no-remote` | not passed: no such literal in the 1.0.91 binary (only `--remote` / `--no-remote-export`), and an option the CLI rejects kills the launch |
 | `--effort`, `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | from Copilot's own help/changelog, not yet exercised by a probe (WP4d) |
@@ -85,9 +102,9 @@ Copilot never kills a hook the daemon is still answering.
 | `hooks.mjs`, `hook/post.mjs` | the generated `--plugin-dir` plugin and the runner its hooks invoke |
 | `delivery.mjs` | the composer / trust / slash literals |
 | `router.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | which session a hook belongs to; turn edges; channel health off the session lock |
-| `dialogs.mjs` | the permission dialog source (WP4b) |
+| `dialogs.mjs` | the permission dialog source: the held hook, its fall-through, the `events.jsonl` tail |
 | `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `tail.mjs` | the fold + delivery proof, the AI-credit ledger, the context sample, the OTel `chat` span reader, the byte-offset JSONL tail |
-| `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, the numbered permission dialog |
+| `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, `run: <cmd>` raising a permission hook that blocks on the sink until `timeoutSec`, the numbered dialog |
 
 ## Tests
 

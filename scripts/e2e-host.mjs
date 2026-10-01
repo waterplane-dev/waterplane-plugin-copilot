@@ -10,12 +10,18 @@
 // server. Asserts:
 //
 //  - the plugin activates and `copilot` is in the backends list, its wire caps
-//    derived from its sources (hooks true, promptBoxes false);
+//    derived from its sources (hooks true, promptBoxes true);
 //  - a session spawns on it with the minted id as `backendSessionId`;
 //  - it goes `hooked` with `sideChannel` up BEFORE any prompt (the session
 //    lock; Copilot's sessionStart is lazy);
 //  - a delivered prompt is acknowledged ok, reaches events.jsonl, and the turn
-//    starts and ends off the hooks (userPromptSubmitted → agentStop).
+//    starts and ends off the hooks (userPromptSubmitted → agentStop);
+//  - a permission request is HELD and published with the toolCallId as askId;
+//    a phone tap through the host (`promptChoice`) answers the hook `allow`;
+//  - no tap: the hold runs out (8 s), Copilot raises its own dialog, the SAME
+//    box stays up; a tap is refused in words (no plugin keystroke route on this
+//    host), the digit alone typed at the desk answers it, and
+//    `permission.completed` retires the box.
 //
 // E2E_TRACE=1 prints every session update and the delivery ack, timestamped.
 //
@@ -37,6 +43,7 @@ if (!existsSync(MAIN_JS) || !existsSync(BRAND_JS)) {
   process.exit(0);
 }
 const { envName } = await import(pathToFileURL(BRAND_JS).href);
+const { promptFingerprint } = await import(pathToFileURL(join(MAIN, "packages/shared/dist/index.js")).href);
 const { WebSocket } = await import(pathToFileURL(join(MAIN, "node_modules/ws/wrapper.mjs")).href);
 
 const freePort = () => new Promise((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
@@ -75,7 +82,7 @@ const finish = () => {
     process.exit(failed ? 1 : 0);
   }, 500);
 };
-setTimeout(() => { console.log("FAIL: timeout"); failed = true; host.kill("SIGKILL"); finish(); }, 90_000).unref();
+setTimeout(() => { console.log("FAIL: timeout"); failed = true; host.kill("SIGKILL"); finish(); }, 150_000).unref();
 
 try {
   // the host is up when /api/health answers
@@ -108,7 +115,7 @@ try {
   check(await until(() => plug()?.state === "active"), `the copilot plugin is active (${JSON.stringify(plug() && [plug().state, plug().error, plug().status])})`);
   check(await until(() => backends?.some((b) => b.id === "copilot")), `"copilot" is in the backends list (${backends?.map((b) => b.id).join(", ")})`);
   const info = backends?.find((b) => b.id === "copilot");
-  check(info?.caps?.hooks === true && info?.caps?.promptBoxes === false, `wire caps: hooks from the turn source, no prompt boxes (${JSON.stringify(info?.caps)})`);
+  check(info?.caps?.hooks === true && info?.caps?.promptBoxes === true, `wire caps: hooks from the turn source, prompt boxes from the dialog source (${JSON.stringify(info?.caps)})`);
 
   send({ t: "session.create", cwd: repo.path, cols: 110, rows: 32, ackId: "create-1", launch: { backend: "copilot" } });
   check(await until(() => ops.has("create-1")), "the create is answered");
@@ -143,6 +150,47 @@ try {
   check(ledger.totals?.kinds?.input > 0 && ledger.totals.kinds.output > 0 && ledger.models?.length === 1, `…and the tokens per model beside them (${JSON.stringify(ledger.totals?.kinds)})`);
   check(await until(() => cur()?.contextUsedTok > 0, 8000) && cur()?.contextTotalTok === undefined,
     `the context fill is the last chat span's input, with no window (used=${cur()?.contextUsedTok} total=${cur()?.contextTotalTok})`);
+
+  // WP4b: a permission request, held for the phone, answered by a TAP through the host.
+  const tap = (ackId, choice) => {
+    const p = cur()?.prompt;
+    send({ t: "session.input", id: sid, ackId, data: "", expectPrompt: promptFingerprint(p), promptChoice: choice });
+  };
+  const evOf = (t, pred = () => true) => events().filter((e) => e.type === t && pred(e));
+  send({ t: "session.input", id: sid, ackId: "p2", submit: true, data: "run: touch e2e-allow.txt" });
+  check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? ""), 15000), `the held permission is published with the CLI's toolCallId as askId (${JSON.stringify(cur()?.prompt)})`);
+  const p2 = cur()?.prompt;
+  check(p2?.nav === true && p2?.kind === "tool" && p2?.options?.length === 3 && /touch e2e-allow\.txt/.test(p2?.question ?? ""),
+    `…a tool box, nav, the command in its question, three options (${JSON.stringify(p2?.options?.map((o) => o.label))})`);
+  check(p2 && evOf("tool.execution_start").at(-1)?.data.toolCallId === p2.askId, "…the id is the tool call's own");
+  check(evOf("permission.requested", (e) => e.data.permissionRequest.fullCommandText === "touch e2e-allow.txt").length === 0, "…and Copilot is still waiting on the hook (no dialog yet)");
+  tap("tap1", 1);
+  check(await until(() => inputs.has("tap1"), 10000) && inputs.get("tap1").ok === true, `a phone tap answers it (${JSON.stringify(inputs.get("tap1"))})`);
+  check(await until(() => evOf("permission.requested", (e) => e.data.permissionRequest.fullCommandText === "touch e2e-allow.txt").length === 1),
+    "the fake CLI received the hook's answer…");
+  const req2 = evOf("permission.requested", (e) => e.data.permissionRequest.fullCommandText === "touch e2e-allow.txt")[0];
+  check(req2?.data.resolvedByHook === true && evOf("permission.completed", (e) => e.data.requestId === req2.data.requestId)[0]?.data.result.kind === "approved",
+    "…as allow: resolvedByHook, approved, no terminal dialog");
+  check(await until(() => !cur()?.prompt && cur()?.turnActive === false, 10000), `the box is retired and the turn ends (prompt=${JSON.stringify(cur()?.prompt)})`);
+
+  // WP4b: no tap inside the hold — the core answers {} at 8 s, Copilot shows its own dialog, the SAME box stays.
+  send({ t: "session.input", id: sid, ackId: "p3", submit: true, data: "run: touch e2e-late.txt" });
+  check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? "") && cur().prompt.askId !== p2?.askId, 15000), "a second permission is published");
+  const askId3 = cur()?.prompt?.askId;
+  const late = (e) => e.data.permissionRequest.fullCommandText === "touch e2e-late.txt";
+  check(await until(() => evOf("permission.requested", late).length === 1, 15000), "the hold runs out and Copilot raises its own dialog…");
+  check(evOf("permission.requested", late)[0]?.data.resolvedByHook === undefined && evOf("permission.requested", late)[0]?.data.permissionRequest.toolCallId === askId3, "…not hook-resolved, the same toolCallId");
+  check(await until(() => cur()?.prompt?.askId === askId3 && !cur().prompt.options[1].desc, 5000), "the SAME box is still up, now at the terminal route (option 2 is the real 'don't ask again')");
+  tap("tap2", 1);
+  check(await until(() => inputs.has("tap2"), 10000), "the tap is answered");
+  const t2 = inputs.get("tap2");
+  check(t2?.ok === false && /answer it at the terminal/.test(t2?.reason ?? ""),
+    `…with a sentence, nothing typed: this host gives a plugin no keystroke route (${JSON.stringify(t2)})`);
+  check(evOf("permission.completed", (e) => e.data.toolCallId === askId3).length === 0, "…and the dialog is still open");
+  send({ t: "session.input", id: sid, data: "1" }); // a person at the desk: the digit alone
+  check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId3).length === 1, 10000), "the digit alone answers Copilot's dialog");
+  check(evOf("permission.completed", (e) => e.data.toolCallId === askId3)[0]?.data.decisionSource === "human_response", "…decisionSource human_response");
+  check(await until(() => cur()?.prompt?.askId !== askId3, 5000), `permission.completed retires the box (prompt=${JSON.stringify(cur()?.prompt)})`);
   ws.close();
 } catch (e) {
   console.log("FAIL: threw", e);

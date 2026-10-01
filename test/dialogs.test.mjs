@@ -226,3 +226,13 @@ test("a non-shell tool: the hook's two answers during the hold; past it, a refus
   void held;
   r.off();
 });
+
+test("the tool call is found even when the poll read it before the hook arrived", () => {
+  const r = rig();
+  r.tick();
+  r.append(61, 62);
+  r.tick(); // the 500 ms poll got there first
+  r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), fakeHold());
+  assert.equal(r.asked[0].id, C1);
+  r.off();
+});

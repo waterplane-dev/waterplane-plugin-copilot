@@ -54,6 +54,8 @@ export const EVENTS_POLL_MS = 500;
 /** How far back `pending()` / the first read look. */
 export const TAIL_BYTES = 256 * 1024;
 
+const TOOL_EVENTS = new Set(["tool.execution_start", "tool.execution_complete", "permission.requested"]);
+
 /** What the model is told when a person denies from the phone. */
 export const DENY_MESSAGE = "The user denied this from their phone. Do not run it; ask what to do instead.";
 
@@ -117,7 +119,7 @@ export function createDialogs({ router, input = null, home, pollMs = EVENTS_POLL
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null });
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [] });
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
   const publish = (slot, r) => emit(slot, (w) => w.asked(r.dialog));
@@ -251,6 +253,8 @@ export function createDialogs({ router, input = null, home, pollMs = EVENTS_POLL
       let e;
       try { e = JSON.parse(l); } catch { continue; }
       out.push(e);
+      // The tool calls a later permission hook may be about — whichever read saw them (the poll or the hook).
+      if (TOOL_EVENTS.has(e.type)) { s.recent.push(e); if (s.recent.length > 64) s.recent.shift(); }
       onEvent(slot, e, first);
     }
     return out;
@@ -258,9 +262,8 @@ export function createDialogs({ router, input = null, home, pollMs = EVENTS_POLL
 
   /** The toolCallId (and description) of the tool call a permission hook is about, from the tail. */
   function toolCallFor(slot, toolName, command) {
-    const seen = readTail(slot);
+    readTail(slot);
     const s = st(slot);
-    s.recent = [...(s.recent ?? []), ...seen.filter((e) => e.type === "tool.execution_start" || e.type === "tool.execution_complete" || e.type === "permission.requested")].slice(-64);
     const done = new Set();
     for (let i = s.recent.length - 1; i >= 0; i--) {
       const e = s.recent[i], d = e.data ?? {};
