@@ -131,6 +131,18 @@ try {
   check(await until(() => events().some((e) => e.type === "user.message" && e.data.content === "say hello from the e2e")), "the prompt reached events.jsonl as a user.message");
   check(await until(() => events().some((e) => e.type === "session.usage_checkpoint")), "…and the turn ran to its usage checkpoint (after agentStop)");
   check(await until(() => seenTurn.has(sid) && cur()?.turnActive === false), `the turn started and ended off the hooks (seen active=${seenTurn.has(sid)}, now=${cur()?.turnActive})`);
+
+  // WP4c: the sources answer from the files the fake wrote.
+  const getJson = (p) => fetch(`${base}${p}`).then((r) => r.json());
+  const doc = await getJson(`/api/transcript?id=${sid}&detail=full`);
+  check(doc.source === "backend" && doc.turns?.some((t) => t.prompt === "say hello from the e2e" && t.blocks.some((b) => b.kind === "text" && b.text === "ok: say hello from the e2e")),
+    `GET /api/transcript is the events.jsonl fold (source=${doc.source}, turns=${doc.turns?.length})`);
+  const ledger = await getJson("/api/tokenstats/copilot");
+  check(ledger.available === true && ledger.unit?.name === "AI credits" && Math.abs(Object.values(ledger.unit.perDay).reduce((a, b) => a + b, 0) - 0.1) < 1e-6,
+    `GET /api/tokenstats/copilot has the AI credits in their own unit (${JSON.stringify(ledger.unit)})`);
+  check(ledger.totals?.kinds?.input > 0 && ledger.totals.kinds.output > 0 && ledger.models?.length === 1, `…and the tokens per model beside them (${JSON.stringify(ledger.totals?.kinds)})`);
+  check(await until(() => cur()?.contextUsedTok > 0, 8000) && cur()?.contextTotalTok === undefined,
+    `the context fill is the last chat span's input, with no window (used=${cur()?.contextUsedTok} total=${cur()?.contextTotalTok})`);
   ws.close();
 } catch (e) {
   console.log("FAIL: threw", e);

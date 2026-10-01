@@ -22,6 +22,9 @@ import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs } from "./dialogs.mjs";
 import { copilotHome } from "./paths.mjs";
+import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
+import { createLedger } from "./ledger.mjs";
+import { createContextSource } from "./context.mjs";
 
 export const BACKEND_ID = "copilot";
 export const HOLD_DEFAULT_MS = 8000;
@@ -40,8 +43,10 @@ export function holdMsOf(values) {
  *   permission hook + events.jsonl) is what the wire's `promptBoxes` derives
  *   from. While the channel is down there is no box, and the phone says to
  *   answer at the terminal — never a reader written for another TUI.
- * - transcript "none": no core reader; a `sources.transcript` comes in WP4c.
- * - contextMeter false: the footer shows AI credits, never the context.
+ * - transcript "none": no CORE reader — the host asks `sources.transcript`
+ *   (the events.jsonl fold) exactly when this is "none", so it must stay so.
+ * - contextMeter false: the footer shows AI credits, never the context; the
+ *   fill comes from `sources.context` (OTel), the window stays absent.
  * - usageLimits/usageProbe false: no limit banner was measured.
  * - asking false, remoteControl false, slash "none" (design §6).
  * - effort true: `--effort` (CLI help: alias of `--reasoning-effort`).
@@ -82,6 +87,9 @@ export function makeHookHandler({ router, dialogs, now = Date.now }) {
 export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks }) {
   const env = (k) => api.env(k);
   const attach = createAttach(router, { home: () => copilotHome(env) });
+  // A --continue session learns its Copilot id from its first hook, so the id comes off the slot.
+  const home = copilotHome(env);
+  const idOf = (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined;
   return {
     id: BACKEND_ID,
     label: "GitHub Copilot",
@@ -99,6 +107,10 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     sources: {
       turns: createTurnSource(router),
       dialogs: dialogs.source,
+      transcript: createTranscriptSource({ home, idOf }),
+      delivery: createDeliverySource({ home, idOf }),
+      tokens: createLedger({ home, otelDir }),
+      context: createContextSource({ otelDir, idOf }),
       attach,
     },
   };

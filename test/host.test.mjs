@@ -40,6 +40,8 @@ test("activate registers exactly the backend the manifest declares, and writes t
   assert.equal(typeof def.sources.turns.watch, "function");
   assert.equal(typeof def.sources.dialogs.watch, "function", "the dialog source is what gives the phone boxes");
   assert.equal(typeof def.sources.dialogs.pending, "function");
+  assert.equal(def.caps.transcript, "none", "the host asks sources.transcript exactly when no core reader is named");
+  for (const k of ["transcript", "delivery", "tokens", "context"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
   assert.equal(api._hook.opts.maxHoldMs, 8000);
   const hooks = JSON.parse(readFileSync(join(api.dataDir, "copilot-plugin", "hooks.json"), "utf8")).hooks;
   assert.equal(hooks.permissionRequest[0].timeoutSec, 10);

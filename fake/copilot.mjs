@@ -160,6 +160,26 @@ function draw() {
   process.stdout.write("\x1b[H\x1b[2J" + out.join("\r\n"));
 }
 
+// ── OTel: one `chat` span per prompt, when COPILOT_OTEL_FILE_EXPORTER_PATH is set (the shape of the fixture's) ──
+let calls = 0;
+function otelChat(interactionId) {
+  const file = process.env.COPILOT_OTEL_FILE_EXPORTER_PATH;
+  if (!file) return;
+  calls++;
+  const now = Date.now();
+  const input = 1000 * calls, cacheRead = 800 * (calls - 1);
+  const span = {
+    type: "span", traceId: randomUUID().replace(/-/g, ""), spanId: randomUUID().replace(/-/g, "").slice(0, 16), name: `chat ${model}`, kind: 2,
+    startTime: [Math.floor((now - 500) / 1000), ((now - 500) % 1000) * 1e6], endTime: [Math.floor(now / 1000), (now % 1000) * 1e6],
+    attributes: {
+      "gen_ai.operation.name": "chat", "gen_ai.provider.name": "github", "gen_ai.request.model": model, "gen_ai.conversation.id": sessionId,
+      "gen_ai.usage.input_tokens": input, "gen_ai.usage.output_tokens": 20 + calls, "gen_ai.usage.cache_read.input_tokens": cacheRead,
+      "gen_ai.response.model": model, "github.copilot.nano_aiu": 100000000, "github.copilot.interaction_id": interactionId,
+    },
+  };
+  try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify(span) + "\n"); } catch { /* telemetry is best effort */ }
+}
+
 // ── a prompt ──────────────────────────────────────────────────────────────
 let runStarted = false;
 async function prompt(text) {
@@ -202,8 +222,9 @@ async function prompt(text) {
       approved = choice !== 3;
       event("permission.completed", { requestId, toolCallId, result: { kind: approved ? "approved" : "denied-interactively-by-user" }, decisionSource: "human_response" });
     }
+    // tool.execution_start was written BEFORE the permission hook (measured order)
     if (approved) await hook("postToolUse", { toolName: "bash", toolArgs: { command, description }, toolResult: { resultType: "success", textResultForLlm: "done" } });
-    event("tool.execution_complete", { toolCallId, model, interactionId, turnId: "0", success: approved, result: { content: approved ? "done" : "denied" } });
+    event("tool.execution_complete", { toolCallId, model, interactionId, turnId: "0", success: approved, result: { content: approved ? "done\n" : "denied" } });
     lines.push(approved ? ` $ ${command}` : " ✗ command denied");
     event("assistant.turn_end", { turnId: "0" });
   }
@@ -214,6 +235,7 @@ async function prompt(text) {
   lines.push(` ● ${reply}`);
   await hook("agentStop", { transcriptPath: EVENTS, stopReason: "end_turn", stop_hook_active: false });
   aic += 0.1;
+  otelChat(interactionId);
   event("session.usage_checkpoint", { totalNanoAiu: Math.round(aic * 1e9), totalPremiumRequests: lines.filter((l) => l.startsWith(" ❯")).length });
   busy = false;
   draw();
