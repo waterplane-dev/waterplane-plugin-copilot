@@ -8,13 +8,16 @@
  *   this id with our `--plugin-dir` loaded, so its hooks WILL reach the sink.
  *   This is what makes the session `hooked` before any prompt: `sessionStart`
  *   is lazy and fires only after the first one.
+ *   A `--session-id` launch that RESUMES a session with history writes NO lock
+ *   (WP4d probe); its process log `logs/process-<ms>-<pid>.log` names the
+ *   session (`Workspace initialized: <id>`), which `logHolder` reads instead.
  * - its HOOKS: any hook routed to the slot proves the pipe (the only signal a
  *   `--continue` launch has until its id is adopted).
  *
  * Down: the lock's holder is gone, or `sessionEnd` arrived. Polled (1 s), never
  * a watcher: one `readdir` of one small directory.
  */
-import { liveHolder, sessionDir } from "./paths.mjs";
+import { liveHolder, logHolder, sessionDir } from "./paths.mjs";
 
 export const LOCK_POLL_MS = 1000;
 
@@ -28,7 +31,8 @@ export function pollLock(router, slot, home, alive) {
     if (!slot.state.hookSeen) router.setHealth(slot, "down", "waiting for Copilot's first hook to learn which session --continue opened");
     return;
   }
-  const pid = liveHolder(sessionDir(home, slot.id), alive);
+  // A fresh launch holds the lock; a resumed one only says so in its process log (measured, WP4d).
+  const pid = liveHolder(sessionDir(home, slot.id), alive) ?? logHolder(home, slot.id, alive);
   if (pid) {
     slot.state.lockSeen = true;
     router.setHealth(slot, "up");

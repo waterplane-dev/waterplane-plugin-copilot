@@ -16,15 +16,18 @@
  * - `COPILOT_OTEL_FILE_EXPORTER_PATH` makes the CLI write OTel spans (per-call
  *   tokens) to a file; one file per launch, in this plugin's own data dir.
  *
- * Not measured, and therefore NOT passed: `--no-remote`. The 1.0.91 bundle
- * holds `--remote` and `--no-remote-export`, never a `--no-remote` literal, and
- * an option the CLI rejects is a session that dies at launch. Remote control
- * stays off unless asked for (`--remote`) or enabled in the user's own config.
+ * `--no-remote` EXISTS on 1.0.91 (`copilot --help` lists `--remote`,
+ * `--no-remote`, `--remote-export`, `--no-remote-export`; the parser accepts
+ * it) but is NOT passed: remote control is OFF by default — a launch without
+ * it logs `session.start {remoteSteerable: false}` (WP4d probe) — and there is
+ * no `remote` config key (`copilot help config`) that could turn it on behind
+ * our back. It is on only when asked for (`--remote`).
  *
- * Documented by the CLI's own help/changelog but not exercised by the probe:
- * `--effort` (alias of `--reasoning-effort`; a level the model lacks is
- * "reported and left unapplied"), `--allow-tool=write`, `--allow-all`,
- * `--plan`, `--continue`. WP4d's probe owns confirming them.
+ * Accepted by the 1.0.91 parser (WP4d: `copilot <flag> --version` runs, an
+ * unknown flag is "unexpected argument"): `--effort` (a hidden alias of
+ * `--reasoning-effort`), `--plan`, `--allow-tool=write`, `--no-remote`;
+ * `--allow-all` and `--continue` are in `--help`. Their EFFECT on a session
+ * was not exercised (no prompt was spent on them).
  */
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, mkdirSync } from "node:fs";

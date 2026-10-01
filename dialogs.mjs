@@ -27,10 +27,12 @@
  * Measured facts this relies on:
  * - the hook payload has NO request id (`{hookName, toolName, toolInput:
  *   {command}, permissionSuggestions}`). `tool.execution_start` (with the
- *   `toolCallId`, `arguments.command` and `arguments.description`) is written
- *   to events.jsonl BEFORE the hook runs, so the dialog's id is that
- *   `toolCallId` — the same id `permission.requested` carries later. Not found
- *   ⇒ a minted id, matched to the later event by its command text.
+ *   `toolCallId`, `arguments.command` and `arguments.description`) precedes
+ *   the permission in events.jsonl, but reaches the DISK just after the hook
+ *   arrives (WP4d probe), so the hook waits up to `TOOLCALL_WAIT_MS` for it and
+ *   the dialog's id is that `toolCallId` — the same id `permission.requested`
+ *   carries later. Not found by then ⇒ a minted id, which learns the
+ *   `toolCallId` when the line lands, else is matched by its command text.
  * - no `permission.requested` is written while the hook runs; it appears the
  *   instant the hook returns or is killed, with the TUI dialog.
  * - the TUI dialog: `Do you want to run this command?` / `1. Yes` / `2. Yes, and
@@ -53,6 +55,13 @@ export const DIALOG_KEYS = Object.freeze({ 1: "1", 2: "2", 3: "3" });
 
 /** How often a watched session's events.jsonl is read for new lines. */
 export const EVENTS_POLL_MS = 500;
+/**
+ * How long a permission hook waits for its `tool.execution_start` to reach
+ * events.jsonl before the box is published under a minted id. Measured by
+ * WP4d's probe: see README "Measured on 1.0.91".
+ */
+export const TOOLCALL_WAIT_MS = 1200;
+const TOOLCALL_STEP_MS = 50;
 /** How far back `pending()` / the first read look. */
 export const TAIL_BYTES = 256 * 1024;
 
@@ -119,7 +128,7 @@ function readLines(path, from, max) {
   } finally { closeSync(fd); }
 }
 
-export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, now = Date.now } = {}) {
+export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now } = {}) {
   const homeDir = () => (typeof home === "function" ? home() : home);
   let minted = 0;
 
@@ -226,6 +235,14 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, now = Dat
         if (r) drop(r);
         return;
       }
+      case "tool.execution_start": {
+        // A box published under a minted id learns its tool call late (the id it was shown under stays).
+        const tcid = str(d.toolCallId), cmd = str(d.arguments?.command);
+        if (!tcid || !cmd) return;
+        const r = findOpen(slot, (x) => !x.toolCallId && x.command === cmd);
+        if (r) { r.toolCallId = tcid; if (!r.intention && str(d.arguments?.description)) { r.intention = str(d.arguments.description); } }
+        return;
+      }
       case "tool.execution_complete": {
         const tcid = str(d.toolCallId);
         const r = tcid ? findOpen(slot, (x) => x.toolCallId === tcid) : null;
@@ -293,10 +310,30 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, now = Dat
       id: hit?.toolCallId ?? `copilot-perm-${now()}-${++minted}`, toolCallId: hit?.toolCallId,
       toolName, shell, command, intention: hit?.intention, toolInput: shell ? null : toolInput, phase: "hook",
     });
-    st(slot).open.set(r.id, r);
     const held = new Promise((resolve) => { r.settle = resolve; });
-    hold.onExpired(() => { toTui(slot, r); readTail(slot); });
-    publish(slot, r);
+    let published = false;
+    const go = () => {
+      if (published) return;
+      published = true;
+      st(slot).open.set(r.id, r);
+      publish(slot, r);
+    };
+    hold.onExpired(() => { go(); toTui(slot, r); readTail(slot); });
+    if (hit || toolCallWaitMs <= 0) { go(); return held; }
+    // The tool call may not be on disk yet: look again for a moment, then publish either way.
+    const t0 = now();
+    const look = () => {
+      if (published) return;
+      const h = toolCallFor(slot, toolName, command);
+      if (h) {
+        r.id = r.dialog.id = h.toolCallId;
+        r.toolCallId = h.toolCallId;
+        if (h.intention) { r.intention = h.intention; r.dialog.question = questionOf(r); }
+        go();
+      } else if (now() - t0 >= toolCallWaitMs) go();
+      else setTimeout(look, TOOLCALL_STEP_MS).unref?.();
+    };
+    setTimeout(look, TOOLCALL_STEP_MS).unref?.();
     return held;
   }
 

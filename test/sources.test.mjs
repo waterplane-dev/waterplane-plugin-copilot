@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRouter } from "../router.mjs";
 import { emitTurn, turnEdge, createTurnSource } from "../turns.mjs";
 import { createAttach, noteHook, pollLock } from "../channel.mjs";
-import { liveHolder, workspaceCwd } from "../paths.mjs";
+import { liveHolder, logHolder, workspaceCwd } from "../paths.mjs";
 
 const SAMPLES = new URL("./fixtures/copilot-1.0.91/hook-samples/", import.meta.url);
 const sample = (n) => JSON.parse(readFileSync(new URL(`${n}.json`, SAMPLES), "utf8"));
@@ -108,4 +108,28 @@ test("paths: a lock with a live pid is a holder; workspace.yaml's cwd is read", 
   assert.equal(liveHolder(join(dir, "nope")), null);
   writeFileSync(join(dir, "workspace.yaml"), "id: x\ncwd: /tmp/wp0-copilot/repo\nbranch: main\n");
   assert.equal(workspaceCwd(dir), "/tmp/wp0-copilot/repo");
+});
+
+test("a resumed session writes no lock: its live process log names it (last Workspace initialized wins)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "copilot-home-"));
+  mkdirSync(join(home, "session-state", ID), { recursive: true });
+  mkdirSync(join(home, "logs"));
+  const OTHER = "92f1bdad-7d31-4cb9-8933-316cd85ac009";
+  const log = join(home, "logs", "process-1790890493808-5151.log");
+  writeFileSync(log, `2026-10-01T21:34:53.820Z [INFO] Workspace initialized: ${OTHER}\n`);
+  writeFileSync(join(home, "logs", "process-1790890000000-6262.log"), `[INFO] Workspace initialized: ${ID}\n`); // a dead pid
+  const alive = (pid) => pid === 5151;
+  assert.equal(logHolder(home, ID, alive), null, "the live process holds another session; the dead one is not a holder");
+  const r = createRouter();
+  const attach = createAttach(r, { home, pollMs: 60_000, alive });
+  const h = await attach(ss(), () => {});
+  assert.equal(h.health().state, "down");
+  appendFileSync(log, `2026-10-01T21:35:00.000Z [INFO] Workspace initialized: ${ID}\n`);
+  assert.equal(logHolder(home, ID, alive), 5151);
+  pollLock(r, r.slotFor(ss()), home, alive);
+  assert.equal(h.health().state, "up");
+  pollLock(r, r.slotFor(ss()), home, () => false);
+  assert.equal(h.health().state, "down");
+  assert.match(h.health().note, /exited/);
+  await h.close();
 });

@@ -27,7 +27,7 @@ function wrap(d) {
   return { ...d, options: d.options, answer: async (c) => { const res = await d.answer(c); if (res && "keys" in res) typedSink?.push(res.keys); return res; } };
 }
 
-function rig({ up = true, clock = null } = {}) {
+function rig({ up = true, clock = null, toolCallWaitMs = 0 } = {}) {
   const home = mkdtempSync(join(tmpdir(), "copilot-dialogs-"));
   const dir = join(home, "session-state", ID);
   mkdirSync(dir, { recursive: true });
@@ -39,7 +39,7 @@ function rig({ up = true, clock = null } = {}) {
   if (up) router.setHealth(slot, "up");
   const typed = []; // what the host would type: every `{keys}` an answer handed back
   typedSink = typed;
-  const dialogs = createDialogs({ router, home, pollMs: 60_000, ...(clock ? { now: clock } : {}) });
+  const dialogs = createDialogs({ router, home, pollMs: 60_000, toolCallWaitMs, ...(clock ? { now: clock } : {}) });
   const asked = [], resolved = [];
   const off = dialogs.source.watch(ss, { asked: (d) => asked.push(wrap(d)), resolved: (id) => resolved.push(id) });
   const append = (...xs) => appendFileSync(file, xs.map((x) => (typeof x === "number" ? line(x) : JSON.stringify(x))).join("\n") + "\n");
@@ -243,5 +243,38 @@ test("the tool call is found even when the poll read it before the hook arrived"
   r.tick(); // the 500 ms poll got there first
   r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), fakeHold());
   assert.equal(r.asked[0].id, C1);
+  r.off();
+});
+
+test("the tool call reaches events.jsonl AFTER the hook: the box waits for it briefly and is published under its toolCallId", async () => {
+  const r = rig({ toolCallWaitMs: 1000 });
+  r.tick();
+  const held = r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), fakeHold());
+  assert.equal(r.asked.length, 0, "not yet: the tool call is not on disk");
+  setTimeout(() => r.append(22, 23), 120);
+  await new Promise((res) => setTimeout(res, 400));
+  assert.equal(r.asked.length, 1);
+  assert.equal(r.asked[0].id, C0);
+  assert.match(r.asked[0].question, /Create c0\.txt and print done/);
+  assert.deepEqual(await r.asked[0].answer(1), { ok: true });
+  assert.deepEqual(await held, { behavior: "allow" });
+  r.off();
+});
+
+test("no tool call within the wait: a minted id, which learns the toolCallId when it lands", async () => {
+  const r = rig({ toolCallWaitMs: 150 });
+  r.tick();
+  const hold = fakeHold();
+  r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), hold);
+  await new Promise((res) => setTimeout(res, 400));
+  assert.equal(r.asked.length, 1);
+  assert.match(r.asked[0].id, /^copilot-perm-/);
+  hold._expire();
+  r.append(61, 62, 72, 73);
+  r.tick();
+  assert.deepEqual(await r.asked[0].answer(1), { keys: "1" }, "matched to the terminal dialog through the late toolCallId");
+  r.append(74, 75, 76);
+  r.tick();
+  assert.equal(r.resolved.at(-1), r.asked[0].id, "permission.completed (by toolCallId) retires it");
   r.off();
 });

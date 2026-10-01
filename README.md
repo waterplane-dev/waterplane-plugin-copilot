@@ -87,9 +87,45 @@ Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon 
 |---|---|
 | "Don't ask again" from the phone during the hold | the hook protocol has only allow/deny: allows once, and says so |
 | Model list | none on purpose: the account measured offers only Auto; other plans offer more, and a guessed list is worse than a free-text field |
-| `--no-remote` | not passed: no such literal in the 1.0.91 binary (only `--remote` / `--no-remote-export`), and an option the CLI rejects kills the launch |
-| `--effort`, `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | from Copilot's own help/changelog, not yet exercised by a probe (WP4d) |
-| Shipping in the installer's catalogue | only after WP4d's real-binary check |
+| `--no-remote` | exists on 1.0.91 but not passed: remote control is off by default (`remoteSteerable: false`) and no config key turns it on |
+| `--effort`, `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised |
+| The context fill right after a turn | can be absent for a few seconds: it comes from the OTel span file, which Copilot flushes later than `events.jsonl` (seen once: absent right after a 1-turn session, 14,452 tokens after a 4-turn one) |
+
+## Measured on 1.0.91
+
+`node scripts/probe.mjs --spend` (WP4d, 2026-10-01): the real `copilot` 1.0.91 through the main
+repo's real host (free loopback port, temp root/config, tmux off) and this plugin, Auto model, a
+temp `COPILOT_HOME` signed in through `COPILOT_GITHUB_TOKEN` read at run time (`~/.copilot` only
+read). Two spending runs (4 prompts, then 1), plus free `--launch-only` runs for the resume.
+Spent **0.68 AIC** in all (0.47 + 0.21, `session.usage_checkpoint` = the footer = the ledger);
+`/usage` showed `1 / 200 AIC` before and after.
+
+| check | result |
+|---|---|
+| backend listed, wire caps derived from the sources (hooks, promptBoxes, transcript true) | pass |
+| session `hooked` + `sideChannel` up before any prompt (session lock) | pass, 3.3–4.8 s after create (incl. the trust dialog) |
+| first prompt on a cold first hook delivered | pass: ack `ok` in 1.4 s, not `unsubmitted` (1 of 1; 4 of 4 prompts in the run) |
+| a turn ends exactly once (`agentStop`) | pass: edges `[active, idle]` |
+| `tool.execution_start` on disk before the hook | **no**: it lands just after the hook arrives (first run: the box went out under a minted id). Fixed: the hook waits for it up to `TOOLCALL_WAIT_MS` (1.2 s) — second run: the box's id is the `toolCallId`, the line seen 17 ms before the box. A box that still misses it learns the id late (same box id) |
+| permission → box → tap inside the hold (allow) → command ran | pass: tap acked 153 ms after the box, file created, `resolvedByHook: true`, box retired |
+| permission → hold expires (8.2 s) → Copilot's own dialog → tap → host types `1` (`{keys}`) | pass: `permission.completed {decisionSource: "human_response", result: approved}`, box retired, command ran |
+| deny inside the hold | pass: `permission.completed {kind: "denied-by-permission-request-hook", message: <ours>}`, nothing ran; the model answered "I can't run that command because the permission request was denied…" and the turn ended normally |
+| `GET /api/transcript` | pass: the events.jsonl fold, one turn per prompt |
+| `GET /api/tokenstats/copilot` | pass: credits (= checkpoint, to the nano) + tokens per model (Auto picked `mai-code-1.1-flash` in one run, `gpt-6-luna` in the other) |
+| `--no-remote` | exists (WP4a was wrong); remote is off by default — not passed |
+| resume by `--session-id` shows the history | pass |
+| resumed session `hooked` before a prompt | **failed, fixed**: a resume of a session WITH history writes no `inuse.<pid>.lock`. The channel now also reads the live pid's `logs/process-<ms>-<pid>.log` (`Workspace initialized: <id>`, last one wins); re-checked through the host (free, seeded history): up |
+
+## Verdict
+
+**Ship-ready** for the installer's catalogue on Copilot 1.0.91, with the two fixes above (both
+from this probe, both re-checked against the real binary). Every path a person takes from the
+phone — launch, deliver, turn edges, permission allow / deny inside the hold, the terminal dialog
+answered by a tap past it, transcript, AI credits, resume — worked end to end through the real
+host. Caveats, said rather than hidden: option 2 tapped during the hold allows once (the hook has no
+"remember"); a non-shell tool's terminal dialog is never answered from the phone (never measured);
+the context fill can lag a turn; the permission modes and `--effort` are parsed but their effect
+was not exercised; the folder-trust dialog is answered at the terminal (Return), like any CLI's.
 
 ## Layout
 
@@ -103,6 +139,7 @@ Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon 
 | `router.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | which session a hook belongs to; turn edges; channel health off the session lock |
 | `dialogs.mjs` | the permission dialog source: the held hook, its fall-through, the `events.jsonl` tail |
 | `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `tail.mjs` | the fold + delivery proof, the AI-credit ledger, the context sample, the OTel `chat` span reader, the byte-offset JSONL tail |
+| `scripts/probe.mjs` | the opt-in real-binary check (`--spend`; `--launch-only` and `PROBE_STEPS` spend less or nothing) |
 | `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, `run: <cmd>` raising a permission hook that blocks on the sink until `timeoutSec`, the numbered dialog |
 
 ## Tests
@@ -110,6 +147,7 @@ Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon 
 ```bash
 node --test                 # unit + the fake CLI driving the generated hooks end to end
 node scripts/e2e-host.mjs   # a real daemon from ~/dev/usmc (built), this plugin, the fake copilot
+node scripts/probe.mjs --spend   # the REAL copilot through a real daemon: spends ~0.7 AI credits
 ```
 
 `e2e-host.mjs` boots the main repo's built host on a free loopback port with a temp root, a temp

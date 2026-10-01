@@ -8,7 +8,7 @@
  * `/exit`. `<home>` is `~/.copilot`; the binary also reads `COPILOT_HOME`
  * (seen in the 1.0.91 bundle, not exercised), so it is honoured here too.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -50,4 +50,55 @@ export function workspaceCwd(dir) {
     const m = /^cwd:\s*(.+)$/m.exec(readFileSync(p, "utf8"));
     return m ? m[1].trim().replace(/^["']|["']$/g, "") : null;
   } catch { return null; }
+}
+
+/**
+ * The pid of a live Copilot process whose CURRENT session is `id`, read off its
+ * own process log, or null. Measured on 1.0.91 (WP4d probe): a `--session-id`
+ * launch that RESUMES a session with history writes no `inuse.<pid>.lock` at
+ * all (a fresh one does), so the lock alone never says it is up. Every process
+ * logs to `<home>/logs/process-<ms>-<pid>.log` and writes `Workspace
+ * initialized: <id>` for each session it opens (more than one when it switches),
+ * so the LAST such line of a live pid's log is the session it holds. Only live
+ * pids' logs are read, each from where the previous read stopped.
+ */
+const WS_INIT_RE = /Workspace initialized: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+const logCache = new Map(); // log path → { offset, last, tail }
+const LOG_READ_MAX = 1024 * 1024;
+
+function lastWorkspace(path) {
+  let fd;
+  try { fd = openSync(path, "r"); } catch { logCache.delete(path); return null; }
+  try {
+    const size = fstatSync(fd).size;
+    let c = logCache.get(path);
+    if (!c || size < c.offset) c = { offset: 0, last: null, tail: "" };
+    while (c.offset < size) {
+      const len = Math.min(size - c.offset, LOG_READ_MAX);
+      const buf = Buffer.alloc(len);
+      const got = readSync(fd, buf, 0, len, c.offset);
+      if (got <= 0) break;
+      const text = c.tail + buf.subarray(0, got).toString("utf8");
+      for (const m of text.matchAll(WS_INIT_RE)) c.last = m[1].toLowerCase();
+      c.tail = text.slice(-80); // a line split across two reads
+      c.offset += got;
+    }
+    logCache.set(path, c);
+    return c.last;
+  } finally { closeSync(fd); }
+}
+
+export function logHolder(home, id, alive = pidAlive) {
+  const dir = join(home, "logs");
+  let names;
+  try { names = readdirSync(dir); } catch { return null; }
+  const want = String(id).toLowerCase();
+  for (const n of names) {
+    const m = /^process-\d+-(\d+)\.log$/.exec(n);
+    if (!m) continue;
+    const path = join(dir, n);
+    if (!alive(Number(m[1]))) { logCache.delete(path); continue; }
+    if (lastWorkspace(path) === want) return Number(m[1]);
+  }
+  return null;
 }
