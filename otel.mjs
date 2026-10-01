@@ -19,6 +19,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createTail } from "./tail.mjs";
+import { SESSION_ID_RE } from "./paths.mjs";
 
 /** A cheap pre-filter: the exporter's other spans (invoke_agent carries a long attribute list) are never parsed. */
 const CHAT_LINE = /"gen_ai\.operation\.name"\s*:\s*"chat"/;
@@ -74,6 +75,8 @@ export function createOtelReader(dir) {
       for (const f of files.values()) for (const c of f.chats) if (c.conv === id && (!best || (c.at ?? 0) >= (best.at ?? 0))) best = c;
       return best;
     },
+    /** Session ids named by the span files themselves (`<uuid>.jsonl`): launched here, even before a first span. */
+    fileIds: () => [...files.keys()].map((p) => p.slice(dir.length + 1).replace(/\.jsonl$/, "").toLowerCase()).filter((n) => SESSION_ID_RE.test(n)),
     exists: () => existsSync(dir),
   };
 }

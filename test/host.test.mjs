@@ -108,3 +108,25 @@ test("changing the hold re-registers the hook handler and rewrites the hook time
   assert.equal(hooks.permissionRequest[0].timeoutSec, 17);
   assert.equal(host.holdMsOf({ holdMs: -1 }), 8000);
 });
+
+test("a permission hook is held only when someone can answer it: a phone watching, or the gate on", async () => {
+  const api = makeFakeApi();
+  let sess = null;
+  api.session = () => sess;
+  host.activate(api);
+  const def = api._calls.backend[0];
+  const ss = { id: "wp-1", cwd: "/tmp/wp0-copilot/repo", spawnedAt: 0, backendSessionId: ID };
+  const handle = await def.sources.attach(ss, () => {});
+  const perm = () => api._hook.fn({ hook: "permissionRequest", payload: sample("permissionRequest") }, fakeHold());
+  try {
+    api._hook.fn({ hook: "userPromptSubmitted", payload: sample("userPromptSubmitted") }, fakeHold());
+    sess = { watched: false, mayAnswer: false };
+    assert.deepEqual(perm(), {}, "nobody watching: answered {} at once, no 8 s wait");
+    sess = { watched: true, mayAnswer: false };
+    assert.ok(perm() instanceof Promise, "a phone is looking: held");
+    sess = { watched: false, mayAnswer: true };
+    assert.ok(perm() instanceof Promise, "the gate may answer: held");
+    sess = null;
+    assert.ok(perm() instanceof Promise, "cannot say: held");
+  } finally { await handle.close(); }
+});

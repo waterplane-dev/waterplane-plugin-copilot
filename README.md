@@ -27,8 +27,7 @@ on `PATH`); `COPILOT_HOME` — Copilot's state dir (default `~/.copilot`).
 
 Setting: **Permission hold** (default 8 s) — how long a Copilot permission request waits for a tap
 on the phone before Copilot shows its own dialog in the terminal. The hook timeout written for
-Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon is still answering.
-
+XX
 ## What it does today
 
 - **Launch.** `copilot --session-id=<uuid> --plugin-dir <generated dir> [--model m] [--effort e]
@@ -76,7 +75,9 @@ Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon 
 - **Delivery proof.** The same fold answers `landed` / `userTurns` from `user.message` events.
 - **AI credits.** `GET /api/tokenstats/copilot`: credits from `session.usage_checkpoint`
   (`totalNanoAiu / 1e9`, spend = delta between checkpoints) in their own unit, beside tokens per
-  model from the OTel `chat` spans (input uncached / cache read / cache write / output). Nothing
+  model from the OTel `chat` spans (input uncached / cache read / cache write / output). Both cover
+  ONE population: the sessions this plugin launched (those with an OTel file, `<id>.jsonl` or the
+  span's conversation id); plain-terminal Copilot sessions in `~/.copilot` are in neither. Nothing
   on disk is `available: false` with a sentence, never zeros.
 - **Context fill.** The last `chat` span's input tokens. The window is not claimed (Copilot only
   prints it on `/context`).
@@ -145,7 +146,7 @@ was not exercised; the folder-trust dialog is answered at the terminal (Return),
 ## Tests
 
 ```bash
-node --test                 # unit + the fake CLI driving the generated hooks end to end
+node --test                 # 67: unit + the fake CLI driving the generated hooks end to end
 node scripts/e2e-host.mjs   # a real daemon from ~/dev/usmc (built), this plugin, the fake copilot
 node scripts/probe.mjs --spend   # the REAL copilot through a real daemon: spends ~0.7 AI credits
 ```

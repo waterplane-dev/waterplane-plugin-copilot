@@ -15,12 +15,13 @@ const OTEL = new URL("otel-sample.jsonl", FX).pathname;
 const ID = "2dd08105-5de0-4902-9e93-8d55349bf8e7";
 const ss = { id: "wp-1", cwd: "/tmp/wp0-copilot/repo", spawnedAt: 0, backendSessionId: ID };
 
-function world({ events = true, otel = true } = {}) {
+function world({ events = true, otel = true, launched = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), "copilot-wp4c-"));
   const otelDir = join(home, "otel");
   mkdirSync(otelDir);
   if (events) { mkdirSync(join(home, "session-state", ID), { recursive: true }); copyFileSync(EVENTS, join(home, "session-state", ID, "events.jsonl")); }
   if (otel) copyFileSync(OTEL, join(otelDir, `${ID}.jsonl`));
+  else if (launched) writeFileSync(join(otelDir, `${ID}.jsonl`), ""); // launched here, no model call spanned yet
   return { home, otelDir, eventsFile: join(home, "session-state", ID, "events.jsonl"), done: () => rmSync(home, { recursive: true, force: true }) };
 }
 
@@ -164,6 +165,26 @@ test("ledger: credits without any OTel file keep kinds empty — credits are not
   } finally { w.done(); }
 });
 
+test("ledger: credits and tokens are ONE population — a session this plugin did not launch is in neither", async () => {
+  const w = world();
+  try {
+    const OTHER = "11111111-2222-4333-8444-555555555555";
+    mkdirSync(join(w.home, "session-state", OTHER), { recursive: true });
+    writeFileSync(join(w.home, "session-state", OTHER, "events.jsonl"),
+      JSON.stringify({ type: "session.usage_checkpoint", timestamp: "2026-10-01T10:00:00Z", data: { totalNanoAiu: 50e9 } }) + "\n"); // a plain-terminal session: 50 AIC
+    const doc = await createLedger({ home: w.home, otelDir: w.otelDir }).ledger(0);
+    const credits = Object.values(doc.unit.perDay).reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(credits - 0.547832) < 1e-9, `the foreign 50 AIC is not counted, got ${credits}`);
+    assert.equal(doc.sessions, 1);
+    // and with only foreign sessions on disk there is nothing of ours to report
+    const lone = world({ otel: false, launched: false });
+    try {
+      const d2 = await createLedger({ home: lone.home, otelDir: lone.otelDir }).ledger(0);
+      assert.equal(d2.available, false);
+    } finally { lone.done(); }
+  } finally { w.done(); }
+});
+
 test("ledger: legacy billing (no nano total) is premium requests, a restarted counter is not negative", async () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-wp4c-"));
   try {
@@ -171,7 +192,9 @@ test("ledger: legacy billing (no nano total) is premium requests, a restarted co
     mkdirSync(dir, { recursive: true });
     const cp = (t, pr) => JSON.stringify({ type: "session.usage_checkpoint", timestamp: t, data: { totalPremiumRequests: pr } });
     writeFileSync(join(dir, "events.jsonl"), [cp("2026-10-01T10:00:00Z", 1), cp("2026-10-01T10:05:00Z", 3), cp("2026-10-01T10:06:00Z", 1)].join("\n") + "\n");
-    const doc = await createLedger({ home, otelDir: join(home, "nope") }).ledger(0);
+    mkdirSync(join(home, "otel"));
+    writeFileSync(join(home, "otel", `${ID}.jsonl`), "");
+    const doc = await createLedger({ home, otelDir: join(home, "otel") }).ledger(0);
     assert.equal(doc.unit.name, "premium requests");
     assert.equal(Object.values(doc.unit.perDay).reduce((a, b) => a + b, 0), 4, "1 + 2 + (restart ⇒ 1)");
   } finally { rmSync(home, { recursive: true, force: true }); }

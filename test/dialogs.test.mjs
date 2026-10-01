@@ -278,3 +278,21 @@ test("no tool call within the wait: a minted id, which learns the toolCallId whe
   assert.equal(r.resolved.at(-1), r.asked[0].id, "permission.completed (by toolCallId) retires it");
   r.off();
 });
+
+test("a hook re-fired for a call whose dialog is already held: one dialog, the new hold replaces the old", async () => {
+  const r = rig();
+  r.tick();
+  r.append(23);
+  const h1 = fakeHold(), h2 = fakeHold();
+  const held1 = r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), h1);
+  assert.equal(r.asked.length, 1);
+  const held2 = r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), h2);
+  assert.equal(r.asked.length, 1, "no second box for the same call");
+  assert.deepEqual(await held1, {}, "the old hook's response is released empty");
+  // the OLD hold running out must not flip the live dialog to the terminal route
+  h1._expire();
+  assert.equal(r.asked[0].options.find((o) => o.index === 2).desc?.length > 0, true, "still the hook phase (allow-once note)");
+  assert.deepEqual(await r.asked[0].answer(1), { ok: true });
+  assert.deepEqual(await held2, { behavior: "allow" }, "the tap answers the NEW hook");
+  r.off();
+});

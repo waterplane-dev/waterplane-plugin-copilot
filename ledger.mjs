@@ -18,6 +18,10 @@
  *   cacheRead − cacheWrite, cacheRead, cacheWrite, output. A call whose cache
  *   fields exceed its input keeps `input` as reported rather than a negative.
  *
+ * ONE population: only sessions this plugin launched (those with an OTel file, named for
+ * the session id, or whose spans name it). Checkpoints of plain-terminal sessions in the same
+ * ~/.copilot are not counted, so `unit` and `kinds` describe the same sessions.
+ *
  * Tokens are not credits and credits are not tokens: `kinds` holds only tokens
  * (absent from a day or model no span covers), `unit` holds only the credits.
  * Nothing readable ⇒ `available:false` with a sentence, never zeros.
@@ -84,16 +88,23 @@ export function createLedger({ home, otelDir, now = Date.now } = {}) {
     const haveOtel = otel.refresh();
     const chats = otel.all();
     const sessionIds = new Set();
+    // ONE population for the whole doc: the sessions this plugin launched. Only those have an OTel
+    // file (launch.mjs sets COPILOT_OTEL_FILE_EXPORTER_PATH per launch, named for the session id, or
+    // `continue-*` with the id inside the spans). Credits from `session.usage_checkpoint` live in
+    // EVERY ~/.copilot session, including ones started at a plain terminal; counting those next to
+    // tokens that never saw them would put two populations in one document.
+    const launched = new Set(otel.fileIds());
+    for (const c of chats) if (c.conv) launched.add(c.conv);
 
     // credits (or premium requests) per local day, from checkpoint deltas
     const perDay = {}, turnsDay = {};
     let credits = 0, creditSeen = false, premium = 0, premiumSeen = false, creditTurns = 0;
     let first = null, last = null;
     const stamp = (t) => { if (t != null) { first = first == null ? t : Math.min(first, t); last = last == null ? t : Math.max(last, t); } };
-    const nanoUsed = [...sessions.values()].some((s) => s.checkpoints.some((c) => c.nano != null));
+    const nanoUsed = [...sessions.values()].some((s) => launched.has(s.id) && s.checkpoints.some((c) => c.nano != null));
     const creditsByModel = new Map();
     for (const s of sessions.values()) {
-      if (!s.checkpoints.length) continue;
+      if (!s.checkpoints.length || !launched.has(s.id)) continue;
       sessionIds.add(s.id);
       let prev = 0;
       for (const c of s.checkpoints.slice().sort((a, b) => a.at - b.at)) {

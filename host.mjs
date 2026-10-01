@@ -67,7 +67,7 @@ export const CAPS = Object.freeze({
 });
 
 /** The `onHook` handler. Exported for tests. */
-export function makeHookHandler({ router, dialogs, now = Date.now }) {
+export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true }) {
   return (body, hold) => {
     const msg = parseHookPost(body);
     if (!msg) return {};
@@ -76,7 +76,13 @@ export function makeHookHandler({ router, dialogs, now = Date.now }) {
     noteHook(router, slot, msg.hook);
     const e = turnEdge(msg.hook, msg.payload, now());
     if (e) emitTurn(slot, e);
-    if (msg.hook === "permissionRequest") return dialogs.answerHook(slot, msg.payload, hold);
+    if (msg.hook === "permissionRequest") {
+      // Nobody can answer it from the phone (no phone on the session, the gate off): do not make the
+      // desk wait out the hold for nothing. Copilot's own dialog shows at once; a phone that attaches
+      // later finds it through `pending()` (the tui phase, read off events.jsonl).
+      if (!attended(slot)) return {};
+      return dialogs.answerHook(slot, msg.payload, hold);
+    }
     if (msg.hook === "sessionEnd") dialogs.retireAll(slot);
     else if (msg.hook === "notification") dialogs.poke(slot); // permission_prompt: the TUI dialog is up
     return {};
@@ -127,7 +133,10 @@ export function activate(api) {
   // Past the hold a dialog's answer() resolves to `{ keys }` and the host's
   // answerBox types them (WP3c) — the plugin never types into a session.
   const dialogs = createDialogs({ router, home: () => copilotHome((k) => api.env(k)) });
-  const handler = makeHookHandler({ router, dialogs });
+  // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may
+  // answer for the plugin. Unknown session (null) keeps the hold: cannot say is not "nobody".
+  const attended = (slot) => { const s = api.session?.(slot.hostId); return !s || s.watched === true || s.mayAnswer === true; };
+  const handler = makeHookHandler({ router, dialogs, attended });
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);

@@ -306,11 +306,28 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     // Too little to ask anybody, or no hold to wait on: Copilot shows its own dialog.
     if (!toolName || (shell && !command) || !hold || typeof hold.onExpired !== "function") return {};
     const hit = toolCallFor(slot, toolName, command);
+    // A hook re-fired for a call whose dialog is already held (same tool, same command or input; its
+    // toolCallId is taken, so `hit` is null): ONE dialog, the NEW hold replaces the old. The old hook's
+    // response is released as `{}` (the core would have answered that at its expiry anyway) and its
+    // expiry callback no longer flips the dialog to the terminal route.
+    if (!hit) {
+      const sameInput = (x) => (shell ? x.command === command : JSON.stringify(x.toolInput) === JSON.stringify(toolInput));
+      const prev = findOpen(slot, (x) => x.phase === "hook" && x.settle && x.toolName === toolName && sameInput(x));
+      if (prev) {
+        const old = prev.settle;
+        const again = new Promise((resolve) => { prev.settle = resolve; });
+        const mine = prev.settle;
+        hold.onExpired(() => { if (prev.settle !== mine) return; toTui(slot, prev); readTail(slot); });
+        old({});
+        return again;
+      }
+    }
     const r = makeRecord(slot, {
       id: hit?.toolCallId ?? `copilot-perm-${now()}-${++minted}`, toolCallId: hit?.toolCallId,
       toolName, shell, command, intention: hit?.intention, toolInput: shell ? null : toolInput, phase: "hook",
     });
     const held = new Promise((resolve) => { r.settle = resolve; });
+    const mine = r.settle;
     let published = false;
     const go = () => {
       if (published) return;
@@ -318,7 +335,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       st(slot).open.set(r.id, r);
       publish(slot, r);
     };
-    hold.onExpired(() => { go(); toTui(slot, r); readTail(slot); });
+    hold.onExpired(() => { if (r.settle !== mine) return; go(); toTui(slot, r); readTail(slot); });
     if (hit || toolCallWaitMs <= 0) { go(); return held; }
     // The tool call may not be on disk yet: look again for a moment, then publish either way.
     const t0 = now();
