@@ -21,7 +21,13 @@ const C0 = "call_88O5uHH7RGzLPSX6sc07pW0z";
 const C1 = "call_qBaB7kAhuI0Xe1IqE88pBYfc";
 const payloadFor = (command) => ({ ...SAMPLE, toolInput: { command } });
 
-function rig({ input = null, up = true } = {}) {
+/** The dialog as answerBox sees it: a `{keys}` result is recorded as typed (by the host). */
+let typedSink = null;
+function wrap(d) {
+  return { ...d, options: d.options, answer: async (c) => { const res = await d.answer(c); if (res && "keys" in res) typedSink?.push(res.keys); return res; } };
+}
+
+function rig({ up = true, clock = null } = {}) {
   const home = mkdtempSync(join(tmpdir(), "copilot-dialogs-"));
   const dir = join(home, "session-state", ID);
   mkdirSync(dir, { recursive: true });
@@ -31,11 +37,11 @@ function rig({ input = null, up = true } = {}) {
   const ss = { id: "wp-1", cwd: "/tmp/wp0-copilot/repo", spawnedAt: 0, backendSessionId: ID };
   const slot = router.slotFor(ss);
   if (up) router.setHealth(slot, "up");
-  const typed = [];
-  const inputFn = input === false ? null : (input ?? (async (sid, keys) => { typed.push([sid, keys]); return true; }));
-  const dialogs = createDialogs({ router, input: inputFn, home, pollMs: 60_000 });
+  const typed = []; // what the host would type: every `{keys}` an answer handed back
+  typedSink = typed;
+  const dialogs = createDialogs({ router, home, pollMs: 60_000, ...(clock ? { now: clock } : {}) });
   const asked = [], resolved = [];
-  const off = dialogs.source.watch(ss, { asked: (d) => asked.push(d), resolved: (id) => resolved.push(id) });
+  const off = dialogs.source.watch(ss, { asked: (d) => asked.push(wrap(d)), resolved: (id) => resolved.push(id) });
   const append = (...xs) => appendFileSync(file, xs.map((x) => (typeof x === "number" ? line(x) : JSON.stringify(x))).join("\n") + "\n");
   return { router, slot, ss, dialogs, asked, resolved, typed, append, off, tick: () => dialogs.readTail(slot) };
 }
@@ -99,10 +105,11 @@ test("expiry: the SAME dialog stays, and its answer becomes the digit alone, onc
   assert.deepEqual(r.typed, [], "no digit before the dialog is up — it would land in the composer");
 
   r.append(72, 73);
-  assert.deepEqual(await d.answer(1), { ok: true });
-  assert.deepEqual(r.typed, [["wp-1", DIALOG_KEYS[1]]]);
+  assert.deepEqual(await d.answer(1), { keys: "1" }, "the host types the digit — the plugin never does");
+  assert.deepEqual(r.typed, [DIALOG_KEYS[1]]);
   assert.equal(DIALOG_KEYS[1], "1", "no Return");
   assert.match((await d.answer(1)).reason, /already answered from the phone/);
+  assert.deepEqual(r.typed, ["1"], "a second tap before Copilot confirms types nothing");
   assert.deepEqual(r.resolved, [], "stays up until Copilot confirms");
   r.append(74, 75, 76);
   r.tick();
@@ -114,18 +121,20 @@ test("expiry: the SAME dialog stays, and its answer becomes the digit alone, onc
   r.off();
 });
 
-test("expiry with no keystroke path: a refusal in words, nothing typed", async () => {
-  const r = rig({ input: false });
+test("expiry: keys that did not land may be retried once the settle window has passed", async () => {
+  let t = 1000;
+  const r = rig({ clock: () => t });
   r.tick();
   r.append(62);
   const hold = fakeHold();
   r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), hold);
   hold._expire();
   r.append(73);
-  r.tick();
-  const res = await r.asked[0].answer(1);
-  assert.equal(res.ok, false);
-  assert.match(res.reason, /answer it at the terminal: 1, 2 or 3/);
+  assert.deepEqual(await r.asked[0].answer(3), { keys: "3" });
+  t += 1000;
+  assert.match((await r.asked[0].answer(3)).reason, /already answered/);
+  t += 5000;
+  assert.deepEqual(await r.asked[0].answer(2), { keys: "2" }, "Copilot never confirmed: the dialog is still open, a tap may try again");
   r.off();
 });
 

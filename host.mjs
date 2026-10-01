@@ -124,12 +124,9 @@ export function activate(api) {
   refreshHooks();
 
   const router = createRouter();
-  // The keystroke route past the hold. The host API (v1) gives a plugin no
-  // way to type into a session, so this is null there and a tap on a dialog
-  // already in the terminal is refused in words; a host that offers
-  // `api.input(sessionId, keys)` is used as is.
-  const input = typeof api.input === "function" ? (sid, keys) => api.input(sid, keys) : null;
-  const dialogs = createDialogs({ router, api, input, home: () => copilotHome((k) => api.env(k)) });
+  // Past the hold a dialog's answer() resolves to `{ keys }` and the host's
+  // answerBox types them (WP3c) — the plugin never types into a session.
+  const dialogs = createDialogs({ router, home: () => copilotHome((k) => api.env(k)) });
   const handler = makeHookHandler({ router, dialogs });
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {

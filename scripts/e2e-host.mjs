@@ -19,9 +19,9 @@
 //  - a permission request is HELD and published with the toolCallId as askId;
 //    a phone tap through the host (`promptChoice`) answers the hook `allow`;
 //  - no tap: the hold runs out (8 s), Copilot raises its own dialog, the SAME
-//    box stays up; a tap is refused in words (no plugin keystroke route on this
-//    host), the digit alone typed at the desk answers it, and
-//    `permission.completed` retires the box.
+//    box stays up; a tap makes the dialog answer `{keys:"1"}`, the HOST types
+//    the digit (WP3c) into the fake CLI, which logs `permission.completed
+//    {decisionSource: human_response}`, and that retires the box.
 //
 // E2E_TRACE=1 prints every session update and the delivery ack, timestamped.
 //
@@ -184,11 +184,8 @@ try {
   tap("tap2", 1);
   check(await until(() => inputs.has("tap2"), 10000), "the tap is answered");
   const t2 = inputs.get("tap2");
-  check(t2?.ok === false && /answer it at the terminal/.test(t2?.reason ?? ""),
-    `…with a sentence, nothing typed: this host gives a plugin no keystroke route (${JSON.stringify(t2)})`);
-  check(evOf("permission.completed", (e) => e.data.toolCallId === askId3).length === 0, "…and the dialog is still open");
-  send({ t: "session.input", id: sid, data: "1" }); // a person at the desk: the digit alone
-  check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId3).length === 1, 10000), "the digit alone answers Copilot's dialog");
+  check(t2?.ok === true, `…ok: the dialog answered {keys} and the host typed them (${JSON.stringify(t2)})`);
+  check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId3).length === 1, 10000), "the fake CLI received the digit and answered its dialog");
   check(evOf("permission.completed", (e) => e.data.toolCallId === askId3)[0]?.data.decisionSource === "human_response", "…decisionSource human_response");
   check(await until(() => cur()?.prompt?.askId !== askId3, 5000), `permission.completed retires the box (prompt=${JSON.stringify(cur()?.prompt)})`);
   ws.close();

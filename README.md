@@ -62,11 +62,11 @@ Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon 
   `{behavior:"deny", message}`. **Option 2 ("don't ask again") tapped during the hold allows this
   command ONCE** — the hook protocol has no "remember" answer; the option says so on the phone, and
   at the terminal dialog it is the real thing. No tap in time ⇒ the daemon answers `{}`, Copilot
-  shows its own numbered dialog, and the SAME box stays on the phone; its answer is then the digit
-  alone (no Return, measured), pressed only once `events.jsonl` shows that dialog is up —
-  **but the daemon's plugin API has no keystroke route yet**, so on today's host that tap is
-  refused with a sentence ("answer it at the terminal: 1, 2 or 3"), nothing typed.
-  `permission.completed` retires the box whoever answered; requests a hook decided
+  shows its own numbered dialog, and the SAME box stays on the phone; a tap then makes the
+  dialog's `answer()` return `{ keys: "1" }` — the digit alone, no Return (measured) — and the
+  DAEMON types it into that session (its `answerBox`, WP3c; the plugin never types). That answer is
+  given only once `events.jsonl` shows the dialog is up, so a digit never lands in the composer.
+  The box stays open until `permission.completed` retires it, whoever answered; requests a hook decided
   (`resolvedByHook`) never become boxes. A non-shell tool's request is answered by the hook (Yes /
   No); its terminal dialog was never measured, so past the hold it is answered at the desk. While
   the side channel is down there are no boxes (`pending()` says "cannot say").
@@ -85,7 +85,6 @@ Copilot is always at least 2 s longer, so Copilot never kills a hook the daemon 
 
 | | status |
 |---|---|
-| Answering Copilot's TERMINAL dialog from the phone (after the hold ran out) | needs a host API to press a key in a plugin's own session (`api.input(sessionId, keys)` is used as soon as a host offers it). Until then that tap is refused in words |
 | "Don't ask again" from the phone during the hold | the hook protocol has only allow/deny: allows once, and says so |
 | Model list | none on purpose: the account measured offers only Auto; other plans offer more, and a guessed list is worse than a free-text field |
 | `--no-remote` | not passed: no such literal in the 1.0.91 binary (only `--remote` / `--no-remote-export`), and an option the CLI rejects kills the launch |

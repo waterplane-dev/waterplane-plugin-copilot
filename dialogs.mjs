@@ -11,11 +11,13 @@
  *         {resolvedByHook:true}` + `permission.completed`, and shows no dialog.
  *   tui   the hold ran out (`hold.onExpired`: the core answered `{}`), so Copilot
  *         shows its own numbered dialog. The SAME published dialog stays up; its
- *         `answer()` now presses the digit — alone, NO Return (`DIALOG_KEYS`,
- *         measured) — through the `input` path it was handed, and only once
- *         `events.jsonl` has shown that dialog (`permission.requested` without
- *         `resolvedByHook`), so a digit can never land in the composer.
- *         `permission.completed` retires it, whoever answered.
+ *         `answer()` now resolves to `{ keys: DIALOG_KEYS[choice] }` — the digit
+ *         alone, NO Return (measured) — and the host's `answerBox` types exactly
+ *         that into this session (WP3c: a plugin has no keystroke API). Only
+ *         once `events.jsonl` has shown that dialog (`permission.requested`
+ *         without `resolvedByHook`), so a digit can never land in the composer.
+ *         The dialog stays open until `permission.completed` retires it, whoever
+ *         answered — the host types only while it is still open.
  *
  * A dialog Copilot raised with no hook held (a hook that never reached us, a
  * pane re-attached after a restart) is published from `permission.requested`
@@ -55,6 +57,9 @@ export const EVENTS_POLL_MS = 500;
 export const TAIL_BYTES = 256 * 1024;
 
 const TOOL_EVENTS = new Set(["tool.execution_start", "tool.execution_complete", "permission.requested"]);
+
+/** How long a `{keys}` answer blocks a second one while Copilot has not yet confirmed the first. */
+export const KEYS_SETTLE_MS = 4000;
 
 /** What the model is told when a person denies from the phone. */
 export const DENY_MESSAGE = "The user denied this from their phone. Do not run it; ask what to do instead.";
@@ -114,7 +119,7 @@ function readLines(path, from, max) {
   } finally { closeSync(fd); }
 }
 
-export function createDialogs({ router, input = null, home, pollMs = EVENTS_POLL_MS, now = Date.now } = {}) {
+export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, now = Date.now } = {}) {
   const homeDir = () => (typeof home === "function" ? home() : home);
   let minted = 0;
 
@@ -136,7 +141,7 @@ export function createDialogs({ router, input = null, home, pollMs = EVENTS_POLL
       id: f.id, toolCallId: f.toolCallId ?? null, requestId: f.requestId ?? null,
       toolName: f.toolName, shell: f.shell, command: f.command ?? null, intention: f.intention ?? null,
       toolInput: f.toolInput ?? null, ident: identOf(f.command, f.commands),
-      phase: f.phase, confirmed: !!f.confirmed, typed: false, settle: null, at: now(),
+      phase: f.phase, confirmed: !!f.confirmed, typedAt: null, settle: null, at: now(),
     };
     const options = () => (r.shell ? shellOptions(r.ident, r.phase) : TOOL_OPTIONS);
     r.dialog = {
@@ -161,18 +166,15 @@ export function createDialogs({ router, input = null, home, pollMs = EVENTS_POLL
     // tui phase: Copilot is showing its own dialog; the only route left is the keystroke.
     if (slot.health.state !== "up") return { ok: false, reason: "Copilot's channel is down, so this dialog cannot be answered from the phone — answer it at the terminal" };
     if (!r.shell) return { ok: false, reason: `Copilot is asking about ${r.toolName} in the terminal, and that dialog was never measured — answer it at the terminal` };
-    if (typeof input !== "function") return { ok: false, reason: "Copilot is asking in the terminal now (the phone's hold ran out), and this host gives a plugin no way to press a key — answer it at the terminal: 1, 2 or 3" };
-    if (r.typed) return { ok: false, reason: "already answered from the phone — waiting for Copilot to confirm it" };
+    if (r.typedAt != null && now() - r.typedAt < KEYS_SETTLE_MS) return { ok: false, reason: "already answered from the phone — waiting for Copilot to confirm it" };
     readTail(slot);
     if (r.phase === "done") return { ok: false, reason: "that question is no longer open — it was answered or withdrawn" };
     if (!r.confirmed) return { ok: false, reason: "Copilot has not shown its dialog in the terminal yet — try again in a moment" };
     const front = [...st(slot).open.values()].find((x) => x.phase === "tui");
     if (front !== r) return { ok: false, reason: "another Copilot dialog is in front of this one in the terminal — answer that one first" };
-    r.typed = true;
-    let ok = false;
-    try { ok = !!(await input(slot.hostId, DIALOG_KEYS[choice])); } catch { ok = false; }
-    if (!ok) { r.typed = false; return { ok: false, reason: "the keystroke did not reach the session" }; }
-    return { ok: true };
+    // The host types these (answerBox → core.input), once, while this dialog is still open.
+    r.typedAt = now();
+    return { keys: DIALOG_KEYS[choice] };
   }
 
   /** Switch a hook-phase dialog to the terminal route (the hold ran out, or Copilot killed the hook). */
