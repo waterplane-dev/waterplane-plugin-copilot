@@ -6,8 +6,8 @@
  *      every hook POSTing to `api.hookSink()`;
  *   2. `api.onHook` — routes each post to a host session (router.mjs), turns
  *      it into turn edges (turns.mjs) and channel health (channel.mjs), and
- *      answers `permissionRequest` through dialogs.mjs (WP4a: `{}` at once,
- *      i.e. Copilot shows its own dialog);
+ *      HOLDS `permissionRequest` for a tap through dialogs.mjs (past the hold
+ *      the core answers `{}` and Copilot shows its own dialog);
  *   3. `api.backend` — the descriptor: binary, argv (launch.mjs), delivery
  *      literals (delivery.mjs), caps, and the sources that exist so far.
  *
@@ -35,9 +35,11 @@ export function holdMsOf(values) {
 /**
  * The capabilities, each a statement about what Copilot HAS on 1.0.91:
  * - hooks "plugin-inject": its hooks ride `--plugin-dir` to this plugin's sink.
- * - promptBoxes false: no core screen reader was measured against Copilot's
- *   numbered dialog, and the dialog source is WP4b — so a box is answered at
- *   the desk, never typed at by a reader written for another TUI.
+ * - promptBoxes false: no core SCREEN reader was measured against Copilot's
+ *   numbered dialog. The phone still gets boxes: `sources.dialogs` (the held
+ *   permission hook + events.jsonl) is what the wire's `promptBoxes` derives
+ *   from. While the channel is down there is no box, and the phone says to
+ *   answer at the terminal — never a reader written for another TUI.
  * - transcript "none": no core reader; a `sources.transcript` comes in WP4c.
  * - contextMeter false: the footer shows AI credits, never the context.
  * - usageLimits/usageProbe false: no limit banner was measured.
@@ -70,6 +72,8 @@ export function makeHookHandler({ router, dialogs, now = Date.now }) {
     const e = turnEdge(msg.hook, msg.payload, now());
     if (e) emitTurn(slot, e);
     if (msg.hook === "permissionRequest") return dialogs.answerHook(slot, msg.payload, hold);
+    if (msg.hook === "sessionEnd") dialogs.retireAll(slot);
+    else if (msg.hook === "notification") dialogs.poke(slot); // permission_prompt: the TUI dialog is up
     return {};
   };
 }
@@ -94,7 +98,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     models: async () => ({ aliases: [], ids: [] }),
     sources: {
       turns: createTurnSource(router),
-      ...(dialogs.source ? { dialogs: dialogs.source } : {}),
+      dialogs: dialogs.source,
       attach,
     },
   };
@@ -108,7 +112,12 @@ export function activate(api) {
   refreshHooks();
 
   const router = createRouter();
-  const dialogs = createDialogs({ router, api });
+  // The keystroke route past the hold. The host API (v1) gives a plugin no
+  // way to type into a session, so this is null there and a tap on a dialog
+  // already in the terminal is refused in words; a host that offers
+  // `api.input(sessionId, keys)` is used as is.
+  const input = typeof api.input === "function" ? (sid, keys) => api.input(sid, keys) : null;
+  const dialogs = createDialogs({ router, api, input, home: () => copilotHome((k) => api.env(k)) });
   const handler = makeHookHandler({ router, dialogs });
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {

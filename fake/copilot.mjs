@@ -12,9 +12,14 @@
  * - hooks from `<plugin-dir>/hooks.json`, run as `bash -c <cmd>` with the
  *   payload on stdin, SIGTERMed at `timeoutSec`: `userPromptSubmitted`, then
  *   `sessionStart` (lazily, first prompt of each run), `agentStop` once per
- *   prompt, `sessionEnd` on exit; `permissionRequest` when
- *   `FAKE_COPILOT_PERMISSION=1`, whose `{behavior}` answer skips the dialog and
- *   whose `{}`/nothing draws the numbered dialog, answered by a digit alone.
+ *   prompt, `sessionEnd` on exit; `permissionRequest` for a prompt `run: <cmd>`
+ *   (or every prompt when `FAKE_COPILOT_PERMISSION=1`), after
+ *   `tool.execution_start` and `preToolUse` like the real one; it BLOCKS on
+ *   the sink's answer until `timeoutSec` (then SIGTERM, like the real CLI). A
+ *   `{behavior}` answer skips the dialog (`permission.requested
+ *   {resolvedByHook:true}` + `completed`); `{}`/nothing/killed draws the
+ *   numbered dialog, answered by a digit alone (`decisionSource:
+ *   "human_response"`).
  * - events.jsonl lines built from the 1.0.91 fixture's own lines (same
  *   envelope, same field names), ids and times rewritten.
  * - the screen: a `❯` input row between two full-width `─` rules, the footer.
@@ -167,24 +172,38 @@ async function prompt(text) {
   event("user.message", { content: text, transformedContent: text, messageId: randomUUID(), interactionId, turnId: "0", delivery: "idle" });
   event("assistant.turn_start", { turnId: "0", interactionId, model });
 
-  if (process.env.FAKE_COPILOT_PERMISSION === "1") {
-    const command = "touch fake.txt && echo done";
+  // A permission request: every prompt under FAKE_COPILOT_PERMISSION=1, or a
+  // prompt `run: <command>` for that command.
+  const runMatch = /^run:\s*(.+)$/.exec(text);
+  if (runMatch || process.env.FAKE_COPILOT_PERMISSION === "1") {
+    const command = runMatch ? runMatch[1].trim() : "touch fake.txt && echo done";
+    const description = `Run ${command.split(/\s+/)[0]} (fake)`;
     const toolCallId = `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
-    event("assistant.message", { messageId: randomUUID(), model, content: "", interactionId, turnId: "0", toolRequests: [{ toolCallId, name: "bash", arguments: { command } }] });
+    const commands = command.split(/\s*(?:&&|\|\||;|\|)\s*/).filter(Boolean).map((c) => { const id = c.split(/\s+/)[0]; return { identifier: id, readOnly: id === "echo", allowMatchIdentifier: null }; });
+    event("assistant.message", { messageId: randomUUID(), model, content: "", interactionId, turnId: "0", toolRequests: [{ toolCallId, name: "bash", arguments: { command, description } }] });
+    // measured order: tool.execution_start, the preToolUse hook, THEN the permission hook
+    event("tool.execution_start", { toolCallId, toolName: "bash", arguments: { command, description }, turnId: "0", model });
+    await hook("preToolUse", { toolName: "bash", toolArgs: { command, description } });
+    // No permission.requested while the hook runs (measured); it is SIGTERMed at timeoutSec.
     const ans = await hook("permissionRequest", { hookName: "permissionRequest", toolName: "bash", toolInput: { command }, permissionSuggestions: [] });
     const requestId = randomUUID();
+    const permissionRequest = { kind: "shell", toolCallId, fullCommandText: command, shellType: "bash", intention: description, commands, canOfferSessionApproval: true };
     let approved;
     if (ans?.behavior === "allow" || ans?.behavior === "deny") {
-      event("permission.requested", { requestId, permissionRequest: { kind: "shell", toolCallId, fullCommandText: command }, resolvedByHook: true, agentMode: "interactive" });
+      event("permission.requested", { requestId, permissionRequest, promptRequest: undefined, resolvedByHook: true, agentMode: "interactive" });
       approved = ans.behavior === "allow";
       event("permission.completed", { requestId, result: { kind: approved ? "approved" : "denied-by-hook" } });
+      if (!approved && ans.message) lines.push(` ✗ ${ans.message}`);
     } else {
-      event("permission.requested", { requestId, permissionRequest: { kind: "shell", toolCallId, fullCommandText: command }, permissionMode: "manual", agentMode: "interactive" });
+      // the fixture's template is the hook-resolved request: its flag and its promptRequest must not leak in
+      event("permission.requested", { requestId, permissionRequest, promptRequest: undefined, resolvedByHook: undefined, permissionMode: "manual", agentMode: "interactive" });
       const choice = await new Promise((resolve) => { dialog = { command, resolve }; draw(); void hook("notification", { message: `Run command: ${command}`, title: "Permission needed", hook_event_name: "Notification", notification_type: "permission_prompt" }); });
       dialog = null;
       approved = choice !== 3;
       event("permission.completed", { requestId, toolCallId, result: { kind: approved ? "approved" : "denied-interactively-by-user" }, decisionSource: "human_response" });
     }
+    if (approved) await hook("postToolUse", { toolName: "bash", toolArgs: { command, description }, toolResult: { resultType: "success", textResultForLlm: "done" } });
+    event("tool.execution_complete", { toolCallId, model, interactionId, turnId: "0", success: approved, result: { content: approved ? "done" : "denied" } });
     lines.push(approved ? ` $ ${command}` : " ✗ command denied");
     event("assistant.turn_end", { turnId: "0" });
   }

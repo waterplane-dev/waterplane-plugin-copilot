@@ -38,7 +38,8 @@ test("activate registers exactly the backend the manifest declares, and writes t
   assert.equal(def.caps.hooks, "plugin-inject");
   assert.equal(def.caps.promptBoxes, false);
   assert.equal(typeof def.sources.turns.watch, "function");
-  assert.equal(def.sources.dialogs, undefined, "no dialog source until WP4b");
+  assert.equal(typeof def.sources.dialogs.watch, "function", "the dialog source is what gives the phone boxes");
+  assert.equal(typeof def.sources.dialogs.pending, "function");
   assert.equal(api._hook.opts.maxHoldMs, 8000);
   const hooks = JSON.parse(readFileSync(join(api.dataDir, "copilot-plugin", "hooks.json"), "utf8")).hooks;
   assert.equal(hooks.permissionRequest[0].timeoutSec, 10);
@@ -82,7 +83,10 @@ test("hooks posted to the sink become turn edges and channel health on the right
   assert.equal(handle.health().state, "up");
   post("sessionStart");
   post("preToolUse");
-  assert.deepEqual(post("permissionRequest"), {}, "WP4a: fall through to Copilot's own dialog at once");
+  const hold = fakeHold();
+  const held = api._hook.fn({ hook: "permissionRequest", payload: sample("permissionRequest") }, hold);
+  assert.ok(held instanceof Promise, "a permission request is HELD for a tap");
+  hold._expire(); // the core answers {} itself; the promise is left to it
   post("agentStop");
   assert.deepEqual(edges, ["started", "ready", "ended"]);
   post("sessionEnd");

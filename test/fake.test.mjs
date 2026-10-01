@@ -95,3 +95,29 @@ test("permission: a hook answer skips the dialog; an empty one draws it and a di
     assert.equal(req.at(-1).data.permissionMode, "manual");
   } finally { f.type("/exit\r"); await f.exited; await f.sink.close(); }
 });
+
+test("permission: `run: <cmd>` asks after tool.execution_start; a hook that never answers falls through and the dialog appears", { timeout: 30000 }, async () => {
+  let release;
+  const never = new Promise((r) => { release = r; });
+  const f = await boot(async (b) => (b?.hook === "permissionRequest" ? (await never, {}) : {}));
+  try {
+    await until(() => /❯ /.test(f.screen()));
+    const t0 = Date.now();
+    f.type("run: touch slow.txt\r");
+    const post = await f.sink.waitFor((p) => p?.hook === "permissionRequest");
+    assert.deepEqual(post.payload.toolInput, { command: "touch slow.txt" });
+    const ev = f.events();
+    const start = ev.find((e) => e.type === "tool.execution_start");
+    assert.equal(start?.data.arguments.command, "touch slow.txt", "the tool call is on disk BEFORE the hook (measured order)");
+    assert.equal(ev.some((e) => e.type === "permission.requested"), false, "no permission.requested while the hook runs");
+    assert.ok(await until(() => /Do you want to run this command\?/.test(f.screen()), 15000), "the dialog after the kill");
+    // The runner gives up 1 s before Copilot's kill (runnerWaitMs), so ~9 s; never early.
+    assert.ok(Date.now() - t0 >= 8500, `not before the runner's wait (9 s): ${Date.now() - t0} ms`);
+    const req = f.events().find((e) => e.type === "permission.requested");
+    assert.equal(req.data.permissionRequest.toolCallId, start.data.toolCallId);
+    assert.equal(req.data.resolvedByHook, undefined);
+    f.type("3");
+    assert.ok(await until(() => f.events().some((e) => e.type === "permission.completed")));
+    assert.equal(f.events().find((e) => e.type === "permission.completed").data.result.kind, "denied-interactively-by-user");
+  } finally { release(); f.child.kill("SIGTERM"); await f.exited; await f.sink.close(); }
+});
