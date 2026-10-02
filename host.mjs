@@ -69,32 +69,34 @@ export const CAPS = Object.freeze({
 /** The session action that drops this session's allow rules (manifest `actions`). */
 export const FORGET_ACTION = "forget-allow-rules";
 
+/** Does this host keep standing rules (its answer gate's `ruleAllows`)? An older host does not. */
+export const supportsRules = (api) => typeof api?.ruleAllows === "function" && typeof api?.rules === "function" && typeof api?.forgetRules === "function";
+
 /**
- * Put the plugin's allow rules where the person looks: a badge on the session row while any
- * exists, and a decision-log row when one is made, used or dropped. Exported for tests.
+ * Show the HOST's standing rules for a session where the person looks: a badge while any exists,
+ * and a decision-log row for each one newly kept (each USE is logged by the host's gate itself).
+ * Exported for tests.
  */
-export function showRules(api, slot, ev) {
+export function showRules(api, slot) {
   const sid = slot.hostId;
-  if (!sid) return;
-  const n = ev.rules.length;
+  if (!sid || !supportsRules(api)) return;
+  let rules;
+  try { rules = api.rules(sid); } catch { return; }
   const clip = (c) => (c.length > 28 ? c.slice(0, 27) + "…" : c);
-  api.setBadge(sid, n ? { text: n === 1 ? `allows: ${clip(ev.rules[0].command)}` : `${n} allow rules`, tone: "warn" } : null);
-  const opts = [{ index: 1, label: "Yes" }, { index: 2, label: RULE_LABEL }, { index: 3, label: "No" }];
-  const q = (cmd) => `Do you want to run this command?\n${cmd}`;
-  if (ev.type === "added") {
-    api.decision({ sessionId: sid, question: q(ev.rule.command), options: opts, outcome: "rule kept", choice: 2,
-      rationale: "Option 2 tapped while Copilot waited on its permission hook. Copilot cannot keep a rule from a hook, so this plugin allows exactly this command line again, in this session only, until it ends or the rule is forgotten." });
-  } else if (ev.type === "used") {
-    api.decision({ sessionId: sid, question: q(ev.rule.command), options: opts, outcome: "answered", choice: 1,
-      rationale: `Allowed without asking by the rule tapped at ${new Date(ev.rule.at).toLocaleTimeString()} (exact command, this session; use ${ev.rule.uses}).` });
-  } else if (ev.type === "cleared" || ev.type === "ended") {
-    api.decision({ sessionId: sid, question: "Allow rules for this session", options: [], outcome: ev.type === "ended" ? "rules ended with the session" : "rules forgotten", choice: null,
-      rationale: ev.type === "ended" ? "Copilot's session ended; its allow rules went with it." : "The person asked to forget them: Copilot asks again." });
+  api.setBadge(sid, rules.length ? { text: rules.length === 1 ? `allows: ${clip(rules[0].label)}` : `${rules.length} allow rules`, tone: "warn" } : null);
+  const known = (slot.state.ruleKeys ??= new Set());
+  for (const r of rules) {
+    if (known.has(r.key)) continue;
+    known.add(r.key);
+    api.decision({ sessionId: sid, question: `Do you want to run this command?\n${r.label}`, options: [{ index: 1, label: "Yes" }, { index: 2, label: RULE_LABEL }, { index: 3, label: "No" }],
+      outcome: "rule kept", choice: 2,
+      rationale: "Option 2 tapped while Copilot waited on its permission hook. Copilot cannot keep a rule from a hook, so waterplane's answer gate keeps it: exactly this command line, this session only, until it ends or the rule is forgotten." });
   }
+  for (const k of [...known]) if (!rules.some((r) => r.key === k)) known.delete(k);
 }
 
 /** The `onHook` handler. Exported for tests. */
-export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, endGate = null }) {
+export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, endGate = null, ruleAllows = null }) {
   return (body, hold) => {
     const msg = parseHookPost(body);
     if (!msg) return {};
@@ -110,9 +112,10 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
     else if (e?.edge === "ended") slot.state.inTurn = false;
     if (e && !(e.edge === "ready" && slot.state.inTurn)) { if (endGate) endGate.edge(slot, e); else emitTurn(slot, e); }
     if (msg.hook === "permissionRequest") {
-      // A rule the person made with option 2 during an earlier hold: exactly this command, this
-      // session. Answered here, before the "is anybody watching" test — it is their standing answer.
-      const byRule = dialogs.ruleFor?.(slot, msg.payload);
+      // A rule a PERSON made with option 2 during an earlier hold: exactly this command, this
+      // session — kept and judged by the host's answer gate, never here. Asked before the "is
+      // anybody watching" test: it is their standing answer.
+      const byRule = ruleAllows?.(slot, msg.payload);
       if (byRule) return byRule;
       // Nobody can answer it from the phone (no phone on the session, the gate off): do not make the
       // desk wait out the hold for nothing. Copilot's own dialog shows at once; a phone that attaches
@@ -120,7 +123,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
       if (!attended(slot)) return {};
       return dialogs.answerHook(slot, msg.payload, hold);
     }
-    if (msg.hook === "sessionEnd") { slot.state.inTurn = false; endGate?.flush(slot); dialogs.retireAll(slot); dialogs.clearRules?.(slot, "ended"); }
+    if (msg.hook === "sessionEnd") { slot.state.inTurn = false; endGate?.flush(slot); dialogs.retireAll(slot); }
     else if (msg.hook === "notification") dialogs.poke(slot); // permission_prompt: the TUI dialog is up
     return {};
   };
@@ -173,8 +176,12 @@ export function activate(api) {
   // is put where the person looks: the session row's badge and the decision log.
   // An aborted turn (Esc — also the phone's "No" past the hold) gets no agentStop from Copilot
   // (measured), so its end comes from the `abort` line in events.jsonl instead.
+  // Option 2 during the hold carries `remember`; a PERSON's tap on it makes the HOST keep the rule
+  // (an older host without standing rules gets no option 2 during the hold at all).
+  const rulesOn = supportsRules(api);
   const dialogs = createDialogs({
-    router, home: () => copilotHome((k) => api.env(k)), onRule: (slot, ev) => showRules(api, slot, ev),
+    router, home: () => copilotHome((k) => api.env(k)), rulesSupported: rulesOn,
+    onAnswered: (slot, a) => { if (a.choice === 2 && a.phase === "hook") setImmediate(() => showRules(api, slot)); },
     onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; endGate.edge(slot, { edge: "ended", at }); },
   });
   const context = createContextSource({
@@ -187,7 +194,17 @@ export function activate(api) {
   // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may
   // answer for the plugin. Unknown session (null) keeps the hold: cannot say is not "nobody".
   const attended = (slot) => { const s = api.session?.(slot.hostId); return !s || s.watched === true || s.mayAnswer === true; };
-  const handler = makeHookHandler({ router, dialogs, attended, endGate });
+  const ruleAllows = rulesOn ? (slot, payload) => {
+    const tool = typeof payload?.toolName === "string" ? payload.toolName : "";
+    const command = typeof payload?.toolInput?.command === "string" ? payload.toolInput.command : "";
+    if (!slot.hostId || !command || !["bash", "shell", "powershell"].includes(tool)) return null;
+    let r;
+    try { r = api.ruleAllows(slot.hostId, command, "Copilot asked again for the exact command line the rule covers"); } catch { return null; }
+    if (!r?.ok) return null;
+    showRules(api, slot);
+    return { behavior: "allow" };
+  } : null;
+  const handler = makeHookHandler({ router, dialogs, attended, endGate, ruleAllows });
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);
@@ -198,8 +215,11 @@ export function activate(api) {
   api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context }));
   api.on("action", (e) => {
     if (e.action !== FORGET_ACTION) return { ok: false, message: `unknown action ${e.action}` };
+    if (!rulesOn) return { ok: false, message: "This waterplane keeps no allow rules (it is older than standing rules)." };
+    const n = e.sessionId ? api.forgetRules(e.sessionId) : 0;
     const slot = e.sessionId ? router.peek(e.sessionId) : null;
-    const n = slot ? dialogs.clearRules(slot) : 0;
+    if (slot) showRules(api, slot);
+    if (n) api.decision({ sessionId: e.sessionId, question: "Allow rules for this session", options: [], outcome: "rules forgotten", choice: null, rationale: `The person asked to forget ${n}: Copilot asks again.` });
     return { ok: true, message: n ? `Forgot ${n} allow rule${n === 1 ? "" : "s"}: Copilot asks again.` : "This session has no allow rules." };
   });
 

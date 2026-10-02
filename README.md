@@ -83,15 +83,18 @@ during the hold (see below).
   at the terminal"). The box stays open until `permission.completed` retires it, whoever answered;
   requests a hook decided (`resolvedByHook`) never become boxes. While the side channel is down
   there are no boxes (`pending()` says "cannot say").
-- **"Don't ask again" during the hold is the plugin's rule, and says so.** Copilot's hook output
-  is allow / deny (+ message, interrupt) — nothing in it persists a rule, and the hook is asked
-  again for the identical command (measured). So option 2 during the hold reads **"Yes, and don't
-  ask again for this exact command in this session"**: it allows, and the plugin then answers
-  later permission hooks for exactly that command line (same text, shell tools only) with `allow`
-  without asking — in this host session only, in memory, gone when Copilot's session ends. The
-  session row shows a badge (`allows: <command>`), every rule made, used or dropped is a
-  decision-log row, and the session action **Forget allow rules** drops them. At the terminal
-  dialog option 2 is Copilot's own rule (every `touch` in this repo).
+- **"Don't ask again" during the hold is a rule waterplane's answer gate keeps, and says so.**
+  Copilot's hook output is allow / deny (+ message, interrupt) — nothing in it persists a rule, and
+  the hook is asked again for the identical command (measured). So option 2 during the hold reads
+  **"Yes, and don't ask again for this exact command in this session"** and carries `remember:
+  {key: <the command line>}`. When a PERSON taps it, the HOST keeps that rule (its answer gate,
+  memory only, this session, cleared when it exits or the plugin is switched off); the plugin keeps
+  none. The next permission hook first asks `api.ruleAllows(session, command)`: yes only for that
+  exact command line, and every yes is audited by the host (sent row, decision row, autofire note).
+  The session row shows a badge (`allows: <command>`), a "rule kept" decision row is written when
+  one appears, and the session action **Forget allow rules** drops them (`api.forgetRules`). A
+  daemon older than standing rules gets NO option 2 during the hold — nothing is promised that
+  nobody keeps. At the terminal dialog option 2 is Copilot's own rule (every `touch` in this repo).
 - **Reader transcript.** `events.jsonl` folded by `interactionId` (one turn per prompt): prompt =
   `user.message.content`, assistant text, tool calls with input and output; the other ~150 event
   types are ignored. Read by byte offset, so a long session is not re-parsed per poll.
@@ -113,7 +116,7 @@ during the hold (see below).
 
 | | status |
 |---|---|
-| Copilot's own "don't ask again" from the phone during the hold | the hook cannot persist one; the plugin keeps its own rule for the exact command, in this session (above) |
+| Copilot's own "don't ask again" from the phone during the hold | the hook cannot persist one; the host's answer gate keeps a rule for the exact command, in this session (above; needs a daemon with standing rules — `api.ruleAllows`) |
 | A typed reason with "No" past the hold | Esc stops the turn; the reason field takes free text the host's bounded keys cannot type safely — answer at the terminal, or prompt after |
 | Terminal dialogs for URL / path / sandbox-bypass requests | not answered from the phone (refused in words); MCP, memory and extension-tool dialogs are answered from the 1.0.91 source's shape, not measured |
 | A turn aborted while nobody watches | its end comes from the `abort` line, which is read while a phone watches the session; otherwise the host's own fallback ends it |
@@ -156,7 +159,7 @@ clean. **0.72 AIC in all** (0.26 + 0.47, `session.usage_checkpoint`). The second
 | check | result |
 |---|---|
 | hook output can persist a rule | **no**: the 1.0.91 bundle's hook output is allow/deny + message + interrupt; `permissionSuggestions` arrives empty; the identical command fires the hook again |
-| option 2 inside the hold → the plugin's rule | pass: allowed, badge `allows: touch probe-rule.txt`; the same command again answered `allow` by the rule in 86 ms, no box, `resolvedByHook` |
+| option 2 inside the hold → a rule | pass (then kept by the plugin; since moved into the host's answer gate, checked only against the fake CLI + the gate's own e2e): allowed, badge `allows: touch probe-rule.txt`; the same command again answered `allow` by the rule in 86 ms, no box, `resolvedByHook` |
 | file write past the hold | pass: box under the call's id, re-worded to `Do you want to create …?`; `1` typed → `approved`, `human_response`, file created. Dialog on screen: `1. Yes` / `2. Yes, and don't ask again for file operations when in this repo (…)` / `3. No, and tell Copilot what to do differently (Esc to stop)` |
 | "No" past the hold | Esc typed → `permission.completed {cancelled, "Session aborted"}`, `abort`, checkpoint, **no agentStop**; nothing ran |
 | checkpoint after agentStop / abort | 1–11 ms; its main-conversation `prompt_tokens` = this turn's (14148, 14267, 14465, 14529) |
@@ -183,7 +186,7 @@ CLI's. The three limits this verdict used to list are fixed and measured below
 | `hooks.mjs`, `hook/post.mjs` | the generated `--plugin-dir` plugin and the runner its hooks invoke |
 | `delivery.mjs` | the composer / trust / slash literals |
 | `router.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | which session a hook belongs to; turn edges (the end held for its usage checkpoint); channel health off the session lock |
-| `dialogs.mjs` | the permission dialog source: the held hook, its fall-through, the `events.jsonl` tail, the plugin's allow rules |
+| `dialogs.mjs` | the permission dialog source: the held hook, its fall-through, the `events.jsonl` tail; option 2's `remember` |
 | `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `tail.mjs` | the fold + delivery proof, the AI-credit ledger, the context sample (checkpoint or span, the fresher), the OTel `chat` span reader, the byte-offset JSONL tail |
 | `scripts/probe.mjs` | the opt-in real-binary check (`--spend`; `--launch-only` and `PROBE_STEPS` spend less or nothing) |
 | `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, `run: <cmd>` / `write: <file>` raising a permission hook that blocks on the sink until `timeoutSec`, the numbered dialog (a digit commits a row, the last row's digit only opens its reason field, Esc aborts the turn with no agentStop), a checkpoint at once and the OTel span 2.5 s later |
@@ -192,7 +195,7 @@ CLI's. The three limits this verdict used to list are fixed and measured below
 
 ```bash
 node --test                 # 83: unit, the measured fixtures, and the fake CLI driving the generated hooks
-node scripts/e2e-host.mjs   # a real daemon from the main repo (MAIN_REPO, built), this plugin, the fake copilot
+node scripts/e2e-host.mjs   # a real daemon from the main repo (MAIN_REPO, built; the rule checks need standing rules), this plugin, the fake copilot
 node scripts/probe.mjs --spend   # the REAL copilot through a real daemon: spends ~0.7 AI credits
 PROBE_STEPS=rule,write,nolate node scripts/probe.mjs --spend   # the fix/known-limits checks: ~0.47
 ```

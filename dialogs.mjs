@@ -53,9 +53,11 @@
  *   the list is Yes / No and a "2" would open No's text field.
  * - the hook OUTPUT has no "don't ask again" (allow/deny + message + interrupt;
  *   nothing persists a rule). So option 2 tapped DURING the hold is the
- *   plugin's own rule (`rules`): this exact command line, this host session,
- *   memory only, shown on the session row (`onRule` → badge + decision log)
- *   and dropped by the "Forget allow rules" session action.
+ *   HOST's standing rule: the option carries `remember: {key: <command>}`, a
+ *   PERSON's tap on it makes the host keep the rule (its answer gate), and a
+ *   later identical request is answered only if `api.ruleAllows` says so
+ *   (host.mjs). This file keeps no rule. A host without standing rules
+ *   (`rulesSupported` false) gets no option 2 during the hold at all.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { eventsPath } from "./paths.mjs";
@@ -92,7 +94,7 @@ export const DENY_MESSAGE = "The user denied this from their phone. Do not run i
 
 /** Option 2 while Copilot waits on the hook: the plugin's own rule, and said to be. */
 export const RULE_LABEL = "Yes, and don't ask again for this exact command in this session";
-export const RULE_NOTE = "Copilot's permission hook can only allow once, so waterplane keeps this rule, not Copilot: until this session ends, this exact command line is allowed without asking. The session row shows it; \"Forget allow rules\" in the session menu drops it. At the terminal dialog option 2 is Copilot's own rule for the command in this repo.";
+export const RULE_NOTE = "Copilot's permission hook can only allow once, so waterplane keeps this rule, not Copilot: until this session ends, this exact command line is allowed without asking, through waterplane's answer gate (each use is in the decision log). The session row shows it; \"Forget allow rules\" in the session menu drops it. At the terminal dialog option 2 is Copilot's own rule for the command in this repo.";
 /** "No" at the terminal dialog, from the phone: Esc — which STOPS the turn (measured), so it says so. */
 export const NO_STOP_LABEL = "No, and stop this turn (Esc)";
 const ESC_NOTE = "From the phone this presses Esc, the dialog's own \"Esc to stop\": Copilot cancels this request and stops the turn. To tell it what to do instead, send a prompt after it stops — or answer at the terminal, where option 3 takes a typed reason.";
@@ -102,9 +104,9 @@ const ESC_NOTE = "From the phone this presses Esc, the dialog's own \"Esc to sto
  * only when Copilot shows it (`offersRule`). Hook phase: row 2 is the plugin's rule.
  * `ident` is the command's first word.
  */
-export function shellOptions(ident, phase, { offersRule = true } = {}) {
+export function shellOptions(ident, phase, { offersRule = true, command = null, rulesSupported = true } = {}) {
   const out = [{ index: 1, label: "Yes" }];
-  if (phase === "hook") out.push({ index: 2, label: RULE_LABEL, desc: RULE_NOTE });
+  if (phase === "hook") { if (rulesSupported && command) out.push({ index: 2, label: RULE_LABEL, desc: RULE_NOTE, remember: { key: command, label: command } }); }
   else if (offersRule) out.push({ index: 2, label: `Yes, and don't ask again for ${ident || "this command"} in this repo` });
   out.push(phase === "hook" ? { index: 3, label: "No, and tell Copilot what to do differently" } : { index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE });
   return out;
@@ -194,15 +196,12 @@ function readLines(path, from, max) {
   } finally { closeSync(fd); }
 }
 
-export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now, onRule = () => {}, onAbort = () => {} } = {}) {
+export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now, rulesSupported = true, onAnswered = () => {}, onAbort = () => {} } = {}) {
   const homeDir = () => (typeof home === "function" ? home() : home);
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], rules: new Map() });
-  const tellRule = (slot, type, rule) => {
-    try { onRule(slot, { type, rule: rule ? { ...rule } : null, rules: [...st(slot).rules.values()].map((x) => ({ ...x })) }); } catch { /* the host's fault */ }
-  };
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [] });
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
   const publish = (slot, r) => emit(slot, (w) => w.asked(r.dialog));
@@ -231,7 +230,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     return r;
   }
 
-  const optionsOf = (r) => (r.shell ? shellOptions(r.ident, r.phase, { offersRule: r.offersRule }) : r.phase === "hook" ? TOOL_OPTIONS : TOOL_OPTIONS_TUI);
+  const optionsOf = (r) => (r.shell ? shellOptions(r.ident, r.phase, { offersRule: r.offersRule, command: r.command, rulesSupported }) : r.phase === "hook" ? TOOL_OPTIONS : TOOL_OPTIONS_TUI);
 
   /** What `permission.requested` says the terminal dialog is: its `promptRequest`, and whether a shell one has row 2. */
   function setPrompt(r, prompt, pr) {
@@ -248,10 +247,11 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (!allowed.includes(choice)) return { ok: false, reason: `${choice} is not one of this dialog's options` };
     if (r.phase === "hook" && r.settle) {
       const settle = r.settle;
-      // Choice 2 here is allow + the plugin's own rule for this exact command (the hook cannot persist one).
-      if (choice === 2 && r.shell && r.command) addRule(slot, r);
+      // Choice 2 here is allow; the rule it carries (`remember`) is kept by the HOST, after this
+      // returns, and only because a person tapped it.
       settle(choice === 3 ? { behavior: "deny", message: DENY_MESSAGE } : { behavior: "allow" });
       retire(slot, r);
+      try { onAnswered(slot, { choice, command: r.command, phase: "hook" }); } catch { /* the host's fault */ }
       return { ok: true };
     }
     // tui phase: Copilot is showing its own dialog; the only route left is the keystroke.
@@ -275,39 +275,6 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     r.phase = "tui";
     r.settle = null;
     publish(slot, r); // same id; option 2 loses its allow-once note
-  }
-
-  // ── the plugin's own "don't ask again" (hook phase only) ────────────────────
-
-  function addRule(slot, r) {
-    const rules = st(slot).rules;
-    if (rules.has(r.command)) return;
-    const rule = { command: r.command, toolName: r.toolName, at: now(), uses: 0 };
-    rules.set(r.command, rule);
-    tellRule(slot, "added", rule);
-  }
-
-  /** A permission hook a rule of this session covers: `{behavior:"allow"}` and a `used` record; else null. */
-  function ruleFor(slot, payload) {
-    const toolName = str(payload?.toolName);
-    if (toolName !== "bash" && toolName !== "shell" && toolName !== "powershell") return null;
-    const command = str(payload?.toolInput?.command);
-    const rule = command ? st(slot).rules.get(command) : null;
-    if (!rule) return null;
-    rule.uses++;
-    rule.lastAt = now();
-    tellRule(slot, "used", rule);
-    return { behavior: "allow" };
-  }
-
-  /** Drop every rule of this session (the session action, or the session ending). Returns how many. */
-  function clearRules(slot, why = "cleared") {
-    const rules = st(slot).rules;
-    const n = rules.size;
-    if (!n) return 0;
-    rules.clear();
-    tellRule(slot, why, null);
-    return n;
   }
 
   const findOpen = (slot, pred) => { for (const r of st(slot).open.values()) if (pred(r)) return r; return null; };
@@ -524,5 +491,5 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     },
   };
 
-  return { answerHook, ruleFor, clearRules, rules: (slot) => [...st(slot).rules.values()].map((x) => ({ ...x })), onEvent, readTail, retireAll, poke, source };
+  return { answerHook, onEvent, readTail, retireAll, poke, source };
 }

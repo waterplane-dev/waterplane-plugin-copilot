@@ -27,7 +27,7 @@ function wrap(d) {
   return { ...d, options: d.options, answer: async (c) => { const res = await d.answer(c); if (res && "keys" in res) typedSink?.push(res.keys); return res; } };
 }
 
-function rig({ up = true, clock = null, toolCallWaitMs = 0, onRule } = {}) {
+function rig({ up = true, clock = null, toolCallWaitMs = 0, onAnswered, rulesSupported } = {}) {
   const home = mkdtempSync(join(tmpdir(), "copilot-dialogs-"));
   const dir = join(home, "session-state", ID);
   mkdirSync(dir, { recursive: true });
@@ -39,7 +39,7 @@ function rig({ up = true, clock = null, toolCallWaitMs = 0, onRule } = {}) {
   if (up) router.setHealth(slot, "up");
   const typed = []; // what the host would type: every `{keys}` an answer handed back
   typedSink = typed;
-  const dialogs = createDialogs({ router, home, pollMs: 60_000, toolCallWaitMs, ...(clock ? { now: clock } : {}), ...(onRule ? { onRule } : {}) });
+  const dialogs = createDialogs({ router, home, pollMs: 60_000, toolCallWaitMs, ...(clock ? { now: clock } : {}), ...(onAnswered ? { onAnswered } : {}), ...(rulesSupported === false ? { rulesSupported: false } : {}) });
   const asked = [], resolved = [];
   const off = dialogs.source.watch(ss, { asked: (d) => asked.push(wrap(d)), resolved: (id) => resolved.push(id) });
   const append = (...xs) => appendFileSync(file, xs.map((x) => (typeof x === "number" ? line(x) : JSON.stringify(x))).join("\n") + "\n");
@@ -231,7 +231,7 @@ test("a non-shell tool, hook phase: Yes / No are the hook's answers; there is no
   assert.match((await d.answer(2)).reason, /not one of this dialog's options/);
   assert.deepEqual(await d.answer(3), { ok: true });
   assert.equal((await held).behavior, "deny");
-  assert.deepEqual(r.dialogs.rules(r.slot), []);
+  assert.equal(d.options.some((o) => o.remember), false, "no rule is offered for a non-shell tool");
   r.off();
 });
 
@@ -298,49 +298,42 @@ test("a hook re-fired for a call whose dialog is already held: one dialog, the n
 
 // ── fix/known-limits ───────────────────────────────────────────────────────
 
-test("option 2 inside the hold: allow now, and a rule for EXACTLY that command in this session — said, shown, forgettable", async () => {
-  const seen = [];
-  const r = rig({ onRule: (slot, ev) => seen.push(ev) });
+test("option 2 inside the hold: allow now, and the option carries `remember` for EXACTLY that command — the HOST keeps the rule", async () => {
+  const answered = [];
+  const r = rig({ onAnswered: (slot, a) => answered.push(a) });
   r.tick();
   r.append(23);
   const held = r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), fakeHold());
+  const o2 = r.asked[0].options[1];
+  assert.equal(o2.label, RULE_LABEL);
+  assert.deepEqual(o2.remember, { key: "touch c0.txt && echo done", label: "touch c0.txt && echo done" }, "the exact command line, nothing broader");
   assert.deepEqual(await r.asked[0].answer(2), { ok: true });
-  assert.deepEqual(await held, { behavior: "allow" }, "the hook can only allow; the rule is the plugin's");
-  assert.deepEqual(seen.map((e) => e.type), ["added"]);
-  assert.equal(seen[0].rule.command, "touch c0.txt && echo done");
-  assert.deepEqual(r.dialogs.rules(r.slot).map((x) => x.command), ["touch c0.txt && echo done"]);
-
-  // the same command line again: answered by the rule, no box
-  assert.deepEqual(r.dialogs.ruleFor(r.slot, payloadFor("touch c0.txt && echo done")), { behavior: "allow" });
-  assert.equal(r.asked.length, 1, "no second box");
-  assert.deepEqual(seen.map((e) => e.type), ["added", "used"]);
-  assert.equal(seen[1].rule.uses, 1);
-
-  // anything else is NOT covered: another file, a longer line, a different tool with the same text
-  for (const p of [payloadFor("touch c1.txt && echo done"), payloadFor("touch c0.txt && echo done; rm -rf x"), payloadFor("touch c0.txt"),
-    { ...SAMPLE, toolName: "write", toolInput: { command: "touch c0.txt && echo done" } }]) {
-    assert.equal(r.dialogs.ruleFor(r.slot, p), null, JSON.stringify(p.toolInput));
-  }
-
-  // another session's slot does not see it
-  const other = r.router.slotFor({ id: "wp-2", cwd: "/tmp/x", backendSessionId: "6e03459d-26fb-403f-af12-446f7888dd19" });
-  assert.equal(r.dialogs.ruleFor(other, payloadFor("touch c0.txt && echo done")), null);
-
-  assert.equal(r.dialogs.clearRules(r.slot), 1);
-  assert.equal(seen.at(-1).type, "cleared");
-  assert.equal(r.dialogs.ruleFor(r.slot, payloadFor("touch c0.txt && echo done")), null, "forgotten: Copilot asks again");
+  assert.deepEqual(await held, { behavior: "allow" }, "the hook can only allow; the rule is the host's (made by the tap, judged by its gate)");
+  assert.deepEqual(answered, [{ choice: 2, command: "touch c0.txt && echo done", phase: "hook" }]);
+  assert.equal(typeof r.dialogs.ruleFor, "undefined", "the plugin keeps no rule of its own");
   r.off();
 });
 
-test("option 2 at the terminal is Copilot's own rule: the digit, and no plugin rule", async () => {
+test("a host without standing rules: no option 2 during the hold (nothing promised that nobody keeps)", async () => {
+  const r = rig({ rulesSupported: false });
+  r.tick();
+  r.append(23);
+  r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), fakeHold());
+  assert.deepEqual(r.asked[0].options.map((o) => o.index), [1, 3]);
+  assert.match((await r.asked[0].answer(2)).reason, /not one of this dialog's options/);
+  r.off();
+});
+
+test("option 2 at the terminal is Copilot's own rule: the digit, and no `remember`", async () => {
   const seen = [];
-  const r = rig({ onRule: (s, e) => seen.push(e) });
+  const r = rig({ onAnswered: (s, e) => seen.push(e) });
   r.tick();
   r.append(62);
   const hold = fakeHold();
   r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), hold);
   hold._expire();
   r.append(73);
+  assert.equal(r.asked.at(-1).options[1].remember, undefined);
   assert.deepEqual(await r.asked[0].answer(2), { keys: "2" });
   assert.deepEqual(seen, []);
   r.off();

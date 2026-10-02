@@ -43,23 +43,22 @@ function rig(upTo, extra = {}) {
   return { slot, dialogs, asked, resolved, append, tick: () => dialogs.readTail(slot), done: () => { off(); rmSync(home, { recursive: true, force: true }); } };
 }
 
-test("measured: the hook can only allow once — Copilot asks the hook again for the same command (line 37); the plugin's rule answers it", async () => {
-  const seen = [];
-  const r = rig(13, { onRule: (s, e) => seen.push(e.type) });
+test("measured: the hook can only allow once — Copilot asks the hook again for the same command (line 37); the rule's key is that command", async () => {
+  const r = rig(13);
   try {
     assert.equal(hookInput(14).toolName, "bash");
     assert.deepEqual(hookInput(14).permissionSuggestions, [], "nothing in the hook's input or output persists a rule");
     const held = r.dialogs.answerHook(r.slot, hookInput(14), fakeHold());
     assert.equal(r.asked[0].id, ev(11).data.toolCallId);
+    const o2 = r.asked[0].options[1];
     assert.deepEqual(await r.asked[0].answer(2), { ok: true });
     assert.deepEqual(await held, { behavior: "allow" });
     assert.deepEqual(ev(15).data.output, { behavior: "allow" }, "what Copilot logged for the first hook");
     // line 37: Copilot runs the permission hook AGAIN for the identical command
     assert.equal(hookInput(37).toolInput.command, hookInput(14).toolInput.command);
-    assert.deepEqual(r.dialogs.ruleFor(r.slot, hookInput(37)), { behavior: "allow" });
-    assert.deepEqual(ev(38).data.output, { behavior: "allow" }, "…and Copilot logged the rule's answer");
+    assert.equal(o2.remember.key, hookInput(37).toolInput.command, "what the host's rule is keyed on is what the next hook carries");
+    assert.deepEqual(ev(38).data.output, { behavior: "allow" }, "…and Copilot logged the rule's answer (then the plugin's; now the host gate's)");
     assert.equal(ev(39).data.resolvedByHook, true);
-    assert.deepEqual(seen, ["added", "used"]);
   } finally { r.done(); }
 });
 

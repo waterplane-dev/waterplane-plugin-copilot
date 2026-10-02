@@ -23,9 +23,9 @@
 //    the digit (WP3c) into the fake CLI, which logs `permission.completed
 //    {decisionSource: human_response}`, and that retires the box.
 //  - fix/known-limits: the context fill the host shows when a turn ends is THAT
-//    turn's checkpoint, before the (delayed) OTel span exists; option 2 inside
-//    the hold keeps the plugin's rule (badge on the session row) and the same
-//    command again is allowed with no box; a file write past the hold is
+//    turn's checkpoint, before the (delayed) OTel span exists; option 2 tapped
+//    inside the hold makes the HOST's standing rule (badge on the session row)
+//    and the same command again is allowed by its gate with no box; a file write past the hold is
 //    answered by `1` typed by the host; "No" past the hold is Esc.
 //
 // E2E_TRACE=1 prints every session update and the delivery ack, timestamped.

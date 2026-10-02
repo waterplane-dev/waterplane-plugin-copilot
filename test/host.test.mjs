@@ -132,7 +132,7 @@ test("a permission hook is held only when someone can answer it: a phone watchin
   } finally { await handle.close(); }
 });
 
-test("a rule from option 2 inside the hold is shown (badge + decision log), answers the same command with no box, and the session action forgets it", async () => {
+test("a rule a PERSON made (host-kept) answers the same command through the host's gate, is shown, and the session action forgets it", async () => {
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const home = mkdtempSync(join(tmpdir(), "copilot-rule-"));
@@ -147,15 +147,19 @@ test("a rule from option 2 inside the hold is shown (badge + decision log), answ
   const held = post("touch a.txt", fakeHold());
   for (let i = 0; i < 40 && !asked.length; i++) await new Promise((r) => setTimeout(r, 50)); // no tool call on disk: published after the wait
   assert.equal(asked.length, 1);
+  assert.deepEqual(api._calls.ruleAllows.map((c) => c.key), ["touch a.txt"], "the gate was asked first, and said no");
+  const o2 = asked[0].options.find((o) => o.index === 2);
+  assert.deepEqual(o2.remember, { key: "touch a.txt", label: "touch a.txt" });
+  // what the HOST does when a person's tap answers that option: answer() through the source, then keep the rule
   assert.deepEqual(await asked[0].answer(2), { ok: true });
+  api._remember("wp-9", o2.remember.key, o2.remember.label);
   assert.deepEqual(await held, { behavior: "allow" });
+  await new Promise((r) => setImmediate(r));
   assert.deepEqual(api._calls.setBadge.at(-1), { sid: "wp-9", badge: { text: "allows: touch a.txt", tone: "warn" } });
   assert.equal(api._calls.decision.at(-1).outcome, "rule kept");
-  assert.match(api._calls.decision.at(-1).rationale, /exactly this command line again, in this session only/);
 
-  assert.deepEqual(post("touch a.txt", fakeHold()), { behavior: "allow" }, "answered by the rule, at once");
+  assert.deepEqual(post("touch a.txt", fakeHold()), { behavior: "allow" }, "answered by the host's rule, at once");
   assert.equal(asked.length, 1, "no box");
-  assert.equal(api._calls.decision.at(-1).outcome, "answered");
   assert.ok(post("touch b.txt", fakeHold()) instanceof Promise, "another command is held and asked as before");
 
   const action = api._calls.on.find((x) => x.event === "action").fn;
@@ -164,4 +168,11 @@ test("a rule from option 2 inside the hold is shown (badge + decision log), answ
   assert.deepEqual(api._calls.setBadge.at(-1), { sid: "wp-9", badge: null });
   assert.ok(post("touch a.txt", fakeHold()) instanceof Promise, "forgotten: asked again");
   assert.deepEqual(action({ action: host.FORGET_ACTION, sessionId: "wp-404" }), { ok: true, message: "This session has no allow rules." });
+});
+
+test("an older host (no standing rules): no option 2 during the hold, and the forget action says why", async () => {
+  const api = makeFakeApi({ legacy: true });
+  host.activate(api);
+  const action = api._calls.on.find((x) => x.event === "action").fn;
+  assert.match(action({ action: host.FORGET_ACTION, sessionId: "wp-1" }).message, /keeps no allow rules/);
 });
