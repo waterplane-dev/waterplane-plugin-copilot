@@ -101,7 +101,7 @@ const ESC_NOTE = "From the phone this presses Esc, the dialog's own \"Esc to sto
 
 /**
  * A shell dialog's options for the phone. Terminal phase: the CLI's own words (1.0.91), row 2
- * only when Copilot shows it (`offersRule`). Hook phase: row 2 is the plugin's rule.
+ * only when Copilot shows it (`offersRule`). Hook phase: row 2 carries `remember` (a rule the host keeps).
  * `ident` is the command's first word.
  */
 export function shellOptions(ident, phase, { offersRule = true, command = null, rulesSupported = true } = {}) {

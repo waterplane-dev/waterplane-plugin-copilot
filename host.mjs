@@ -172,7 +172,7 @@ export function activate(api) {
   const router = createRouter();
   // Past the hold a dialog's answer() resolves to `{ keys }` and the host's
   // answerBox types them (WP3c) — the plugin never types into a session.
-  // Option 2 during the hold makes a rule the plugin keeps; every change to one
+  // Option 2 during the hold makes a rule the HOST keeps (its answer gate); every change to one
   // is put where the person looks: the session row's badge and the decision log.
   // An aborted turn (Esc — also the phone's "No" past the hold) gets no agentStop from Copilot
   // (measured), so its end comes from the `abort` line in events.jsonl instead.

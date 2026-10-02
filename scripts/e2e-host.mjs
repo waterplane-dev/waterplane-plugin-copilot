@@ -207,11 +207,11 @@ try {
   check(await until(() => cur()?.prompt?.askId !== askId3, 5000), `permission.completed retires the box (prompt=${JSON.stringify(cur()?.prompt)})`);
   await until(() => cur()?.turnActive === false, 10000);
 
-  // fix/known-limits #1: option 2 inside the hold → the plugin's rule; the same command again needs no tap.
+  // fix/known-limits #1: option 2 inside the hold → the host's rule; the same command again needs no tap.
   send({ t: "session.input", id: sid, ackId: "p4", submit: true, data: "run: touch e2e-rule.txt" });
   check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? "") && cur().prompt.askId !== askId3, 15000), "rule: a third permission is published");
   const askId4 = cur()?.prompt?.askId;
-  check(/this exact command in this session/.test(cur()?.prompt?.options?.[1]?.label ?? ""), `rule: option 2 inside the hold says it is the plugin's rule (${cur()?.prompt?.options?.[1]?.label})`);
+  check(/this exact command in this session/.test(cur()?.prompt?.options?.[1]?.label ?? ""), `rule: option 2 inside the hold says it keeps a rule (${cur()?.prompt?.options?.[1]?.label})`);
   tap("tap4", 2);
   check(await until(() => inputs.get("tap4")?.ok === true, 10000), `rule: tap 2 answers the hook (${JSON.stringify(inputs.get("tap4"))})`);
   const rule = (e) => e.data.permissionRequest?.fullCommandText === "touch e2e-rule.txt";

@@ -434,7 +434,7 @@ async function main() {
   if (want("rule")) {
     historyRe ??= /probe-rule/;
     const a = await permissionPrompt("r1", "probe-rule.txt");
-    check(!!a.box && a.box.options?.some((o) => o.index === 2 && /this exact command in this session/.test(o.label)), "rule: option 2 inside the hold says it is the plugin's rule", JSON.stringify(a.box?.options?.map((o) => o.label)));
+    check(!!a.box && a.box.options?.some((o) => o.index === 2 && /this exact command in this session/.test(o.label)), "rule: option 2 inside the hold says it keeps a rule", JSON.stringify(a.box?.options?.map((o) => o.label)));
     tap("tapr1", 2);
     await until(() => inputs.has("tapr1"), 10000);
     check(inputs.get("tapr1")?.ok === true, "rule: tap 2 inside the hold answers the hook", JSON.stringify(inputs.get("tapr1")));
