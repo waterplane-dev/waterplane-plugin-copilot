@@ -1,7 +1,7 @@
 # GitHub Copilot CLI backend
 
-A plugin for the phone remote that drives coding CLIs in a terminal on your desktop (the daemon in
-`~/dev/usmc`). It adds **GitHub Copilot CLI** as a backend: the launcher can start a Copilot session
+A plugin for [waterplane](https://waterplane.dev), the phone remote that drives coding CLIs in a terminal on
+your desktop. It adds **GitHub Copilot CLI** as a backend: the launcher can start a Copilot session
 in any repo, the phone types into it like a person would, and Copilot's own lifecycle hooks tell the
 daemon exactly when a turn starts and ends.
 
@@ -11,12 +11,14 @@ that it is not. MIT licensed.
 
 ## Install
 
+Installer: `install.sh --with copilot` does steps 2 and 3. By hand:
+
 1. Install GitHub Copilot CLI and sign in once in a terminal (`copilot`, then `/login`).
-2. Add this repo's path to `plugins.json` in the daemon's config dir (the same place your other
+2. Clone this repo and add its path to `plugins.json` in the daemon's config dir (the same place your other
    plugins are listed):
 
    ```json
-   { "paths": ["~/dev/usmc-plugin-copilot"] }
+   { "paths": ["~/dev/waterplane-plugin-copilot"] }
    ```
 
 3. Restart the daemon. The plugin shows up in Settings → Plugins with a status line naming the
@@ -147,7 +149,7 @@ was not exercised; the folder-trust dialog is answered at the terminal (Return),
 
 ```bash
 node --test                 # 67: unit + the fake CLI driving the generated hooks end to end
-node scripts/e2e-host.mjs   # a real daemon from ~/dev/usmc (built), this plugin, the fake copilot
+node scripts/e2e-host.mjs   # a real daemon from the main repo (MAIN_REPO, built), this plugin, the fake copilot
 node scripts/probe.mjs --spend   # the REAL copilot through a real daemon: spends ~0.7 AI credits
 ```
 

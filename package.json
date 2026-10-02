@@ -1,5 +1,5 @@
 {
-  "name": "usmc-plugin-copilot",
+  "name": "waterplane-plugin-copilot",
   "version": "0.1.0",
   "description": "GitHub Copilot CLI as a backend: a plugin for the phone remote that drives coding CLIs in a PTY (see README.md).",
   "type": "module",
