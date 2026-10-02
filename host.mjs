@@ -18,9 +18,9 @@ import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "
 import { hookTimeoutSec, parseHookPost, writePluginDir } from "./hooks.mjs";
 import { DELIVERY } from "./delivery.mjs";
 import { createRouter } from "./router.mjs";
-import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
+import { createEndGate, createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
-import { createDialogs } from "./dialogs.mjs";
+import { createDialogs, RULE_LABEL } from "./dialogs.mjs";
 import { copilotHome } from "./paths.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
@@ -66,8 +66,35 @@ export const CAPS = Object.freeze({
   forkVia: false,
 });
 
+/** The session action that drops this session's allow rules (manifest `actions`). */
+export const FORGET_ACTION = "forget-allow-rules";
+
+/**
+ * Put the plugin's allow rules where the person looks: a badge on the session row while any
+ * exists, and a decision-log row when one is made, used or dropped. Exported for tests.
+ */
+export function showRules(api, slot, ev) {
+  const sid = slot.hostId;
+  if (!sid) return;
+  const n = ev.rules.length;
+  const clip = (c) => (c.length > 28 ? c.slice(0, 27) + "…" : c);
+  api.setBadge(sid, n ? { text: n === 1 ? `allows: ${clip(ev.rules[0].command)}` : `${n} allow rules`, tone: "warn" } : null);
+  const opts = [{ index: 1, label: "Yes" }, { index: 2, label: RULE_LABEL }, { index: 3, label: "No" }];
+  const q = (cmd) => `Do you want to run this command?\n${cmd}`;
+  if (ev.type === "added") {
+    api.decision({ sessionId: sid, question: q(ev.rule.command), options: opts, outcome: "rule kept", choice: 2,
+      rationale: "Option 2 tapped while Copilot waited on its permission hook. Copilot cannot keep a rule from a hook, so this plugin allows exactly this command line again, in this session only, until it ends or the rule is forgotten." });
+  } else if (ev.type === "used") {
+    api.decision({ sessionId: sid, question: q(ev.rule.command), options: opts, outcome: "answered", choice: 1,
+      rationale: `Allowed without asking by the rule tapped at ${new Date(ev.rule.at).toLocaleTimeString()} (exact command, this session; use ${ev.rule.uses}).` });
+  } else if (ev.type === "cleared" || ev.type === "ended") {
+    api.decision({ sessionId: sid, question: "Allow rules for this session", options: [], outcome: ev.type === "ended" ? "rules ended with the session" : "rules forgotten", choice: null,
+      rationale: ev.type === "ended" ? "Copilot's session ended; its allow rules went with it." : "The person asked to forget them: Copilot asks again." });
+  }
+}
+
 /** The `onHook` handler. Exported for tests. */
-export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true }) {
+export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, endGate = null }) {
   return (body, hold) => {
     const msg = parseHookPost(body);
     if (!msg) return {};
@@ -75,22 +102,32 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
     if (!slot) return {}; // not a session this host launched, or ambiguous: Copilot goes its own way
     noteHook(router, slot, msg.hook);
     const e = turnEdge(msg.hook, msg.payload, now());
-    if (e) emitTurn(slot, e);
+    // `sessionStart` fires lazily, right AFTER the first prompt's userPromptSubmitted (measured), so
+    // its `ready` would tell the host "at the prompt, no turn" in the middle of that turn — the
+    // host then ended the turn there, and the real end (agentStop) found nothing to end. Inside a
+    // turn it is not passed on.
+    if (e?.edge === "started") slot.state.inTurn = true;
+    else if (e?.edge === "ended") slot.state.inTurn = false;
+    if (e && !(e.edge === "ready" && slot.state.inTurn)) { if (endGate) endGate.edge(slot, e); else emitTurn(slot, e); }
     if (msg.hook === "permissionRequest") {
+      // A rule the person made with option 2 during an earlier hold: exactly this command, this
+      // session. Answered here, before the "is anybody watching" test — it is their standing answer.
+      const byRule = dialogs.ruleFor?.(slot, msg.payload);
+      if (byRule) return byRule;
       // Nobody can answer it from the phone (no phone on the session, the gate off): do not make the
       // desk wait out the hold for nothing. Copilot's own dialog shows at once; a phone that attaches
       // later finds it through `pending()` (the tui phase, read off events.jsonl).
       if (!attended(slot)) return {};
       return dialogs.answerHook(slot, msg.payload, hold);
     }
-    if (msg.hook === "sessionEnd") dialogs.retireAll(slot);
+    if (msg.hook === "sessionEnd") { slot.state.inTurn = false; endGate?.flush(slot); dialogs.retireAll(slot); dialogs.clearRules?.(slot, "ended"); }
     else if (msg.hook === "notification") dialogs.poke(slot); // permission_prompt: the TUI dialog is up
     return {};
   };
 }
 
 /** The backend definition handed to `api.backend`. Exported for tests. */
-export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks }) {
+export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null }) {
   const env = (k) => api.env(k);
   const attach = createAttach(router, { home: () => copilotHome(env) });
   // A --continue session learns its Copilot id from its first hook, so the id comes off the slot.
@@ -116,7 +153,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
       transcript: createTranscriptSource({ home, idOf }),
       delivery: createDeliverySource({ home, idOf }),
       tokens: createLedger({ home, otelDir }),
-      context: createContextSource({ otelDir, idOf }),
+      context: context ?? createContextSource({ otelDir, home, idOf }),
       attach,
     },
   };
@@ -132,11 +169,25 @@ export function activate(api) {
   const router = createRouter();
   // Past the hold a dialog's answer() resolves to `{ keys }` and the host's
   // answerBox types them (WP3c) — the plugin never types into a session.
-  const dialogs = createDialogs({ router, home: () => copilotHome((k) => api.env(k)) });
+  // Option 2 during the hold makes a rule the plugin keeps; every change to one
+  // is put where the person looks: the session row's badge and the decision log.
+  // An aborted turn (Esc — also the phone's "No" past the hold) gets no agentStop from Copilot
+  // (measured), so its end comes from the `abort` line in events.jsonl instead.
+  const dialogs = createDialogs({
+    router, home: () => copilotHome((k) => api.env(k)), onRule: (slot, ev) => showRules(api, slot, ev),
+    onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; endGate.edge(slot, { edge: "ended", at }); },
+  });
+  const context = createContextSource({
+    otelDir: join(api.dataDir, "otel"), home: () => copilotHome((k) => api.env(k)),
+    idOf: (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined,
+  });
+  // The turn's end waits (≤ END_WAIT_MS) for its usage checkpoint, so the host's turn-end
+  // context read is this turn's prompt, not the last one's.
+  const endGate = createEndGate({ ready: (slot, at) => !slot.id || context.checkpointSince(slot.id, at) });
   // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may
   // answer for the plugin. Unknown session (null) keeps the hold: cannot say is not "nobody".
   const attended = (slot) => { const s = api.session?.(slot.hostId); return !s || s.watched === true || s.mayAnswer === true; };
-  const handler = makeHookHandler({ router, dialogs, attended });
+  const handler = makeHookHandler({ router, dialogs, attended, endGate });
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);
@@ -144,7 +195,13 @@ export function activate(api) {
     api.onHook(handler, { maxHoldMs: holdMs }); // a second registration replaces the first
   });
 
-  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks }));
+  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context }));
+  api.on("action", (e) => {
+    if (e.action !== FORGET_ACTION) return { ok: false, message: `unknown action ${e.action}` };
+    const slot = e.sessionId ? router.peek(e.sessionId) : null;
+    const n = slot ? dialogs.clearRules(slot) : 0;
+    return { ok: true, message: n ? `Forgot ${n} allow rule${n === 1 ? "" : "s"}: Copilot asks again.` : "This session has no allow rules." };
+  });
 
   const bin = resolveBin((k) => api.env(k));
   api.setStatus(binFound(bin)

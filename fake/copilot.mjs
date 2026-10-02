@@ -137,7 +137,7 @@ async function hook(name, extra) {
 // ── screen ────────────────────────────────────────────────────────────────
 const lines = [];
 let draft = "";
-let dialog = null; // { command, resolve }
+let dialog = null; // { question: string[], rows: string[] (before the last), last, reason: null|string, resolve }
 let aic = 0;
 let busy = false;
 const cols = () => Math.max(40, process.stdout.columns || 100);
@@ -147,9 +147,10 @@ function draw() {
   const out = [" [Current]  Sessions   Issues   Pull requests   Gists", ""];
   for (const l of lines.slice(-(rows - 12))) out.push(l);
   if (dialog) {
-    out.push("", " Do you want to run this command?", `   ${dialog.command}`, "",
-      " ❯ 1. Yes", `   2. Yes, and don't ask again for \`${dialog.command.split(" ")[0]}\` in this repo`,
-      "   3. No, and tell Copilot what to do differently (Esc to stop)", "",
+    out.push("", ...dialog.question.map((q) => ` ${q}`), "");
+    dialog.rows.forEach((r, i) => out.push(`${i === 0 && dialog.reason == null ? " ❯ " : "   "}${i + 1}. ${r}`));
+    const n = dialog.rows.length + 1;
+    out.push(dialog.reason == null ? `   ${n}. ${dialog.last} (Esc to stop)` : ` ❯ ${n}. ${dialog.reason || dialog.last} (Esc to stop)`, "",
       " ↑/↓ to navigate · enter to select · esc to cancel");
   } else {
     out.push(` ${CWD} [⎇ main]   Session: ${aic.toFixed(2).replace(/\.?0+$/, "") || "0"} AIC used`);
@@ -162,12 +163,12 @@ function draw() {
 
 // ── OTel: one `chat` span per prompt, when COPILOT_OTEL_FILE_EXPORTER_PATH is set (the shape of the fixture's) ──
 let calls = 0;
-function otelChat(interactionId) {
+/** The span for this turn's last call, as a writer to call when the "exporter" flushes. */
+function otelChat(interactionId, input) {
   const file = process.env.COPILOT_OTEL_FILE_EXPORTER_PATH;
-  if (!file) return;
-  calls++;
+  if (!file) return () => {};
   const now = Date.now();
-  const input = 1000 * calls, cacheRead = 800 * (calls - 1);
+  const cacheRead = 800 * (calls - 1);
   const span = {
     type: "span", traceId: randomUUID().replace(/-/g, ""), spanId: randomUUID().replace(/-/g, "").slice(0, 16), name: `chat ${model}`, kind: 2,
     startTime: [Math.floor((now - 500) / 1000), ((now - 500) % 1000) * 1e6], endTime: [Math.floor(now / 1000), (now % 1000) * 1e6],
@@ -177,7 +178,43 @@ function otelChat(interactionId) {
       "gen_ai.response.model": model, "github.copilot.nano_aiu": 100000000, "github.copilot.interaction_id": interactionId,
     },
   };
-  try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify(span) + "\n"); } catch { /* telemetry is best effort */ }
+  return () => { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify(span) + "\n"); } catch { /* telemetry is best effort */ } };
+}
+
+// ── a permission request (measured order: tool.execution_start, preToolUse, permissionRequest) ──
+const ABORTED = new Error("aborted");
+/** The non-shell tool a `write:` prompt's HOOK names (measured: `edit {file_path, diff}`; its call is `apply_patch`). */
+const WRITE_TOOL = "edit";
+async function permission({ toolCallId, toolName, hookTool = toolName, args, hookInput, permissionRequest, promptRequest, question, rows, interactionId, toolTitle }) {
+  event("assistant.message", { messageId: randomUUID(), model, content: "", interactionId, turnId: "0", toolRequests: [{ toolCallId, name: toolName, arguments: args }] });
+  event("tool.execution_start", { toolCallId, toolName, arguments: args, turnId: "0", model, ...(toolTitle ? { toolTitle } : {}) });
+  await hook("preToolUse", { toolName, toolArgs: args });
+  // No permission.requested while the hook runs (measured); it is SIGTERMed at timeoutSec.
+  const ans = await hook("permissionRequest", { hookName: "permissionRequest", toolName: hookTool, toolInput: hookInput, permissionSuggestions: [] });
+  const requestId = randomUUID();
+  if (ans?.behavior === "allow" || ans?.behavior === "deny") {
+    event("permission.requested", { requestId, permissionRequest, promptRequest: undefined, resolvedByHook: true, agentMode: "interactive" });
+    const ok = ans.behavior === "allow";
+    event("permission.completed", { requestId, result: ok ? { kind: "approved" } : { kind: "denied-by-permission-request-hook", message: ans.message } });
+    if (!ok && ans.message) lines.push(` ✗ ${ans.message}`);
+    return ok;
+  }
+  // the fixture's template is the hook-resolved request: its flag must not leak in
+  event("permission.requested", { requestId, permissionRequest, promptRequest, resolvedByHook: undefined, permissionMode: "manual", agentMode: "interactive" });
+  const res = await new Promise((resolve) => {
+    dialog = { question, rows, last: "No, and tell Copilot what to do differently", reason: null, resolve };
+    draw();
+    void hook("notification", { message: `Permission needed: ${question[0]}`, title: "Permission needed", hook_event_name: "Notification", notification_type: "permission_prompt" });
+  });
+  dialog = null;
+  const ok = res.row != null;
+  if (res.abort) {
+    // measured: Esc cancels the request AND the turn — no agentStop follows
+    event("permission.completed", { requestId, toolCallId, result: { kind: "cancelled", reason: "Session aborted" } });
+    throw ABORTED;
+  }
+  event("permission.completed", { requestId, toolCallId, result: ok ? { kind: "approved" } : { kind: "denied-interactively-by-user", ...(res.feedback ? { feedback: res.feedback } : {}) }, decisionSource: "human_response" });
+  return ok;
 }
 
 // ── a prompt ──────────────────────────────────────────────────────────────
@@ -192,41 +229,59 @@ async function prompt(text) {
   event("user.message", { content: text, transformedContent: text, messageId: randomUUID(), interactionId, turnId: "0", delivery: "idle" });
   event("assistant.turn_start", { turnId: "0", interactionId, model });
 
-  // A permission request: every prompt under FAKE_COPILOT_PERMISSION=1, or a
-  // prompt `run: <command>` for that command.
+  // A permission request: every prompt under FAKE_COPILOT_PERMISSION=1, a prompt
+  // `run: <command>` for that command (shell), or `write: <file>` for a file
+  // creation (a non-shell tool).
   const runMatch = /^run:\s*(.+)$/.exec(text);
-  if (runMatch || process.env.FAKE_COPILOT_PERMISSION === "1") {
+  const writeMatch = /^write:\s*(\S+)$/.exec(text);
+  try {
+  if (writeMatch) {
+    const file = join(CWD, writeMatch[1]);
+    const toolCallId = `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    // measured: the call is `apply_patch` (a patch string), its hook says `edit {file_path, diff}`
+    const patch = `*** Begin Patch\n*** Add File: ${writeMatch[1]}\n+hi\n*** End Patch\n`;
+    const diff = `diff --git a${file} b${file}\ncreate file mode 100644\n--- a/dev/null\n+++ b${file}\n@@ -1,0 +1,1 @@\n+hi\n`;
+    const req = { kind: "write", toolCallId, intention: "Create file", fileName: file, diff, newFileContents: "hi\n", canOfferSessionApproval: true };
+    const approved = await permission({
+      toolCallId, toolName: "apply_patch", hookTool: WRITE_TOOL, args: patch, hookInput: { file_path: file, diff }, permissionRequest: req, promptRequest: req,
+      question: [`Do you want to create ${file}?`], rows: ["Yes", "Yes, and don't ask again for file operations when in this repo"],
+      interactionId,
+    });
+    if (approved) writeFileSync(file, "hi\n");
+    event("tool.execution_complete", { toolCallId, model, interactionId, turnId: "0", success: approved, result: { content: approved ? `Created ${file}` : "denied" } });
+    lines.push(approved ? ` ✓ created ${writeMatch[1]}` : " ✗ write denied");
+    event("assistant.turn_end", { turnId: "0" });
+  } else if (runMatch || process.env.FAKE_COPILOT_PERMISSION === "1") {
     const command = runMatch ? runMatch[1].trim() : "touch fake.txt && echo done";
     const description = `Run ${command.split(/\s+/)[0]} (fake)`;
     const toolCallId = `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
     const commands = command.split(/\s*(?:&&|\|\||;|\|)\s*/).filter(Boolean).map((c) => { const id = c.split(/\s+/)[0]; return { identifier: id, readOnly: id === "echo", allowMatchIdentifier: null }; });
-    event("assistant.message", { messageId: randomUUID(), model, content: "", interactionId, turnId: "0", toolRequests: [{ toolCallId, name: "bash", arguments: { command, description } }] });
-    // measured order: tool.execution_start, the preToolUse hook, THEN the permission hook
-    event("tool.execution_start", { toolCallId, toolName: "bash", arguments: { command, description }, turnId: "0", model });
-    await hook("preToolUse", { toolName: "bash", toolArgs: { command, description } });
-    // No permission.requested while the hook runs (measured); it is SIGTERMed at timeoutSec.
-    const ans = await hook("permissionRequest", { hookName: "permissionRequest", toolName: "bash", toolInput: { command }, permissionSuggestions: [] });
-    const requestId = randomUUID();
-    const permissionRequest = { kind: "shell", toolCallId, fullCommandText: command, shellType: "bash", intention: description, commands, canOfferSessionApproval: true };
-    let approved;
-    if (ans?.behavior === "allow" || ans?.behavior === "deny") {
-      event("permission.requested", { requestId, permissionRequest, promptRequest: undefined, resolvedByHook: true, agentMode: "interactive" });
-      approved = ans.behavior === "allow";
-      event("permission.completed", { requestId, result: { kind: approved ? "approved" : "denied-by-hook" } });
-      if (!approved && ans.message) lines.push(` ✗ ${ans.message}`);
-    } else {
-      // the fixture's template is the hook-resolved request: its flag and its promptRequest must not leak in
-      event("permission.requested", { requestId, permissionRequest, promptRequest: undefined, resolvedByHook: undefined, permissionMode: "manual", agentMode: "interactive" });
-      const choice = await new Promise((resolve) => { dialog = { command, resolve }; draw(); void hook("notification", { message: `Run command: ${command}`, title: "Permission needed", hook_event_name: "Notification", notification_type: "permission_prompt" }); });
-      dialog = null;
-      approved = choice !== 3;
-      event("permission.completed", { requestId, toolCallId, result: { kind: approved ? "approved" : "denied-interactively-by-user" }, decisionSource: "human_response" });
-    }
+    const idents = [...new Set(commands.filter((c) => !c.readOnly).map((c) => c.identifier))];
+    const offer = process.env.FAKE_COPILOT_NO_ROW2 !== "1";
+    const permissionRequest = { kind: "shell", toolCallId, fullCommandText: command, shellType: "bash", intention: description, commands, canOfferSessionApproval: offer };
+    const promptRequest = { kind: "commands", fullCommandText: command, intention: description, commandIdentifiers: idents, canOfferSessionApproval: offer, toolCallId };
+    const approved = await permission({
+      toolCallId, toolName: "bash", args: { command, description }, hookInput: { command }, permissionRequest, promptRequest,
+      question: ["Do you want to run this command?", `  ${command}`],
+      rows: ["Yes", ...(offer ? [`Yes, and don't ask again for ${idents.map((x) => `\`${x}\``).join(", ")} in this repo`] : [])],
+      interactionId, toolTitle: "Running command",
+    });
     // tool.execution_start was written BEFORE the permission hook (measured order)
     if (approved) await hook("postToolUse", { toolName: "bash", toolArgs: { command, description }, toolResult: { resultType: "success", textResultForLlm: "done" } });
     event("tool.execution_complete", { toolCallId, model, interactionId, turnId: "0", success: approved, result: { content: approved ? "done\n" : "denied" } });
     lines.push(approved ? ` $ ${command}` : " ✗ command denied");
     event("assistant.turn_end", { turnId: "0" });
+  }
+  } catch (e) {
+    if (e !== ABORTED) throw e;
+    // measured: turn_end, abort, the checkpoint — and NO agentStop hook
+    event("assistant.turn_end", { turnId: "0" });
+    event("abort", { reason: "user_initiated" });
+    lines.push(" ✗ cancelled");
+    checkpoint(interactionId);
+    busy = false;
+    draw();
+    return;
   }
 
   const reply = `ok: ${text}`;
@@ -234,11 +289,25 @@ async function prompt(text) {
   event("assistant.turn_end", { turnId: "1" });
   lines.push(` ● ${reply}`);
   await hook("agentStop", { transcriptPath: EVENTS, stopReason: "end_turn", stop_hook_active: false });
-  aic += 0.1;
-  otelChat(interactionId);
-  event("session.usage_checkpoint", { totalNanoAiu: Math.round(aic * 1e9), totalPremiumRequests: lines.filter((l) => l.startsWith(" ❯")).length });
+  checkpoint(interactionId);
   busy = false;
   draw();
+}
+
+/** The turn's usage checkpoint (measured: right after agentStop, or after an abort). */
+function checkpoint(interactionId) {
+  aic += 0.1;
+  // The prompt of this turn's last main call: in the checkpoint at once (measured: right after
+  // agentStop), in the OTel span only after the exporter's flush (FAKE_OTEL_DELAY_MS, default 2.5 s).
+  calls++;
+  const promptTok = 1000 * calls;
+  const span = otelChat(interactionId, promptTok);
+  setTimeout(span, Number(process.env.FAKE_OTEL_DELAY_MS ?? 2500)).unref?.();
+  const mname = model === "auto" ? "gpt-6-luna" : model;
+  event("session.usage_checkpoint", {
+    totalNanoAiu: Math.round(aic * 1e9), totalPremiumRequests: lines.filter((l) => l.startsWith(" ❯")).length,
+    promptCacheBreakState: [{ conversation: "main", lastActiveModel: mname, models: { [mname]: { model: mname, prompt_tokens: promptTok, cache_read: 800 * (calls - 1), cache_write: 0, completed_at: new Date().toISOString() } } }],
+  });
 }
 
 const queue = [];
@@ -268,8 +337,20 @@ function onKeys(s) {
     if (esc === 1) { esc = ch === "[" ? 2 : 0; continue; }
     if (esc === 2) { if (/[A-Za-z~]/.test(ch)) esc = 0; continue; }
     if (dialog) {
-      if (ch === "1" || ch === "2" || ch === "3") dialog.resolve(Number(ch)); // a digit alone answers (measured)
-      else if (ch === "\x1b") dialog.resolve(3);
+      // 1.0.91 (measured for 1; the rest from its source): a digit alone commits a row before the
+      // last; the last ("No, and tell Copilot …") is only HIGHLIGHTED by its digit and takes a typed
+      // reason; Esc answers No at any point, with the reason typed so far.
+      const n = dialog.rows.length + 1;
+      if (ch === "\x1b") { dialog.resolve({ row: null, abort: true }); continue; } // "Esc to stop" (measured)
+      if (dialog.reason != null) {
+        if (ch === "\r") { if (dialog.reason) dialog.resolve({ row: null, feedback: dialog.reason }); }
+        else if (ch >= " ") dialog.reason += ch;
+        draw();
+        continue;
+      }
+      const d = /^[1-9]$/.test(ch) ? Number(ch) : 0;
+      if (d >= 1 && d < n) dialog.resolve({ row: d });
+      else if (d === n) { dialog.reason = ""; draw(); }
       continue;
     }
     if (ch === "\x03") { if (++ctrlC >= 2) void exit(); continue; }

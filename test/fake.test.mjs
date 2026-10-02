@@ -116,8 +116,14 @@ test("permission: `run: <cmd>` asks after tool.execution_start; a hook that neve
     const req = f.events().find((e) => e.type === "permission.requested");
     assert.equal(req.data.permissionRequest.toolCallId, start.data.toolCallId);
     assert.equal(req.data.resolvedByHook, undefined);
-    f.type("3");
+    f.type("3"); // the last row's digit only highlights it (1.0.91 source): no answer yet
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(f.events().some((e) => e.type === "permission.completed"), false, "a 3 is not an answer");
+    f.type("\x1b"); // Esc answers No
     assert.ok(await until(() => f.events().some((e) => e.type === "permission.completed")));
-    assert.equal(f.events().find((e) => e.type === "permission.completed").data.result.kind, "denied-interactively-by-user");
+    assert.equal(f.events().find((e) => e.type === "permission.completed").data.result.kind, "cancelled", "Esc stops: the request is cancelled (measured)");
+    assert.ok(await until(() => f.events().some((e) => e.type === "abort")), "…the turn is aborted");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(f.sink.posts.some((p) => p?.hook === "agentStop"), false, "…and no agentStop follows (measured)");
   } finally { release(); f.child.kill("SIGTERM"); await f.exited; await f.sink.close(); }
 });

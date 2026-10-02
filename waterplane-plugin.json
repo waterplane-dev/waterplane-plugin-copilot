@@ -18,5 +18,13 @@
       "step": 500,
       "unit": "ms"
     }
+  ],
+  "actions": [
+    {
+      "id": "forget-allow-rules",
+      "label": "Forget allow rules",
+      "note": "Drops the rules made by tapping \"don't ask again\" while Copilot waited on its permission hook. They are this session's only and never outlive it.",
+      "scope": "session"
+    }
   ]
 }

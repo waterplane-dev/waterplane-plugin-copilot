@@ -90,12 +90,13 @@ test("hooks posted to the sink become turn edges and channel health on the right
   assert.ok(held instanceof Promise, "a permission request is HELD for a tap");
   hold._expire(); // the core answers {} itself; the promise is left to it
   post("agentStop");
-  assert.deepEqual(edges, ["started", "ready", "ended"]);
+  assert.deepEqual(edges, ["started"], "sessionStart's ready is not passed on inside a turn; the end waits for its checkpoint");
   post("sessionEnd");
+  assert.deepEqual(edges, ["started", "ended"], "…and sessionEnd releases it at once");
   assert.equal(handle.health().state, "down");
   assert.deepEqual(api._hook.fn({ hook: "agentStop", payload: { ...sample("agentStop"), sessionId: "6e03459d-0000-4000-8000-000000000000" } }, fakeHold()), {}, "not ours: {} and nothing else");
   assert.deepEqual(api._hook.fn({ nonsense: true }, fakeHold()), {});
-  assert.deepEqual(edges, ["started", "ready", "ended"]);
+  assert.deepEqual(edges, ["started", "ended"]);
   await handle.close();
 });
 
@@ -129,4 +130,38 @@ test("a permission hook is held only when someone can answer it: a phone watchin
     sess = null;
     assert.ok(perm() instanceof Promise, "cannot say: held");
   } finally { await handle.close(); }
+});
+
+test("a rule from option 2 inside the hold is shown (badge + decision log), answers the same command with no box, and the session action forgets it", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(join(tmpdir(), "copilot-rule-"));
+  const api = makeFakeApi({ env: { COPILOT_HOME: home } });
+  host.activate(api);
+  const def = api._calls.backend[0];
+  const ss = { id: "wp-9", cwd: "/tmp/wp0-copilot/repo", spawnedAt: 0, backendSessionId: ID };
+  def.sources.turns.watch(ss, { started() {}, ended() {}, ready() {} });
+  const asked = [];
+  def.sources.dialogs.watch(ss, { asked: (d) => asked.push(d), resolved() {} });
+  const post = (command, hold) => api._hook.fn({ hook: "permissionRequest", payload: { ...sample("permissionRequest"), sessionId: ID, toolInput: { command } } }, hold);
+  const held = post("touch a.txt", fakeHold());
+  for (let i = 0; i < 40 && !asked.length; i++) await new Promise((r) => setTimeout(r, 50)); // no tool call on disk: published after the wait
+  assert.equal(asked.length, 1);
+  assert.deepEqual(await asked[0].answer(2), { ok: true });
+  assert.deepEqual(await held, { behavior: "allow" });
+  assert.deepEqual(api._calls.setBadge.at(-1), { sid: "wp-9", badge: { text: "allows: touch a.txt", tone: "warn" } });
+  assert.equal(api._calls.decision.at(-1).outcome, "rule kept");
+  assert.match(api._calls.decision.at(-1).rationale, /exactly this command line again, in this session only/);
+
+  assert.deepEqual(post("touch a.txt", fakeHold()), { behavior: "allow" }, "answered by the rule, at once");
+  assert.equal(asked.length, 1, "no box");
+  assert.equal(api._calls.decision.at(-1).outcome, "answered");
+  assert.ok(post("touch b.txt", fakeHold()) instanceof Promise, "another command is held and asked as before");
+
+  const action = api._calls.on.find((x) => x.event === "action").fn;
+  assert.ok(manifest.actions.some((a) => a.id === host.FORGET_ACTION && a.scope === "session"), "the action is declared");
+  assert.deepEqual(action({ action: host.FORGET_ACTION, sessionId: "wp-9" }), { ok: true, message: "Forgot 1 allow rule: Copilot asks again." });
+  assert.deepEqual(api._calls.setBadge.at(-1), { sid: "wp-9", badge: null });
+  assert.ok(post("touch a.txt", fakeHold()) instanceof Promise, "forgotten: asked again");
+  assert.deepEqual(action({ action: host.FORGET_ACTION, sessionId: "wp-404" }), { ok: true, message: "This session has no allow rules." });
 });

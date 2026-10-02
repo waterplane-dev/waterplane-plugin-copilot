@@ -9,9 +9,10 @@ import { join } from "node:path";
 
 export function makeFakeApi({ env = {}, settings = {}, sink = "http://127.0.0.1:9/api/plugin/copilot/hook" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "copilot-plugin-test-"));
-  const calls = { backend: [], onHook: [], setStatus: [], onSettings: [] };
+  const calls = { backend: [], onHook: [], setStatus: [], onSettings: [], on: [], setBadge: [], decision: [] };
   let values = { holdMs: 8000, ...settings };
   const declared = new Set(["COPILOT_CLI_BIN", "COPILOT_HOME"]);
+  env = { COPILOT_HOME: join(root, "copilot-home"), ...env }; // never the real ~/.copilot
   const api = {
     id: "copilot",
     dataDir: join(root, "plugins", "copilot"),
@@ -23,15 +24,15 @@ export function makeFakeApi({ env = {}, settings = {}, sink = "http://127.0.0.1:
     seedSettings: () => {},
     setStatus: (s) => { calls.setStatus.push(s); },
     env: (name) => (declared.has(name) ? env[name] : undefined),
-    on: () => () => {},
+    on: (event, fn) => { calls.on.push({ event, fn }); return () => {}; },
     session: () => null,
     scrollback: () => "",
     readRepoFile: () => null,
     inlineImages: () => [],
     suggest: () => {},
     answer: async () => ({ ok: false, reason: "fake" }),
-    setBadge: () => {},
-    decision: () => {},
+    setBadge: (sid, badge) => { calls.setBadge.push({ sid, badge }); },
+    decision: (row) => { calls.decision.push(row); },
     meter: () => {},
     notify: () => {},
     claudeUsage: () => null,

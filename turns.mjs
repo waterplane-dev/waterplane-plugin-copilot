@@ -40,6 +40,46 @@ export function emitTurn(slot, e) {
   }
 }
 
+/** How long a turn's end may wait for its `session.usage_checkpoint` (measured: 2–70 ms after agentStop). */
+export const END_WAIT_MS = 1500;
+const END_STEP_MS = 40;
+
+/**
+ * Holds a turn's `ended` edge until `ready(slot, at)` — this turn's
+ * `session.usage_checkpoint` is on disk — or `waitMs` passed, then emits it.
+ * The host reads the context fill at the end edge, and Copilot writes the
+ * checkpoint that carries THIS turn's last prompt size only after the
+ * agentStop hook has returned, so emitting at once read the previous turn.
+ * The hook itself is answered at once; only the edge waits. Any other edge
+ * of the slot first flushes a held end, so the order is never changed.
+ */
+export function createEndGate({ ready, waitMs = END_WAIT_MS, stepMs = END_STEP_MS, now = Date.now } = {}) {
+  const held = new Map(); // slot → { e, t0, timer }
+  const flush = (slot) => {
+    const h = held.get(slot);
+    if (!h) return;
+    held.delete(slot);
+    clearTimeout(h.timer);
+    emitTurn(slot, h.e);
+  };
+  const isReady = (slot, at) => { try { return !!ready(slot, at); } catch { return true; } };
+  function look(slot) {
+    const h = held.get(slot);
+    if (!h) return;
+    if (isReady(slot, h.e.at) || now() - h.t0 >= waitMs) flush(slot);
+    else { h.timer = setTimeout(() => look(slot), stepMs); h.timer.unref?.(); }
+  }
+  return {
+    edge(slot, e) {
+      flush(slot);
+      if (e.edge !== "ended" || waitMs <= 0 || isReady(slot, e.at)) { emitTurn(slot, e); return; }
+      held.set(slot, { e, t0: now(), timer: null });
+      look(slot);
+    },
+    flush,
+  };
+}
+
 /** The `TurnSource` over a router. */
 export function createTurnSource(router) {
   return {

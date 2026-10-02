@@ -2,7 +2,14 @@
 //
 //   node scripts/probe.mjs --spend          (opt-in: it spends AI credits; ~4 short prompts on Auto)
 //   node scripts/probe.mjs --launch-only    (no prompt: launch, hook, /usage — 0 credits)
-//   PROBE_STEPS=late node scripts/probe.mjs --spend   (a subset: pong, allow, late, deny, resume)
+//   PROBE_STEPS=late node scripts/probe.mjs --spend   (a subset: pong, allow, late, deny, resume,
+//                                                      rule, write, nolate)
+//
+// fix/known-limits steps (not in the default set): `rule` — option 2 inside the hold keeps a
+// plugin rule, and the same command again is allowed by it with no box (2 prompts); `write` — a
+// file-creation tool's permission past the hold, answered by a tap the host types (1 prompt);
+// `nolate` — "No" past the hold is Esc (1 prompt). Every turn also checks that the context fill
+// the host shows at the turn's end is THIS turn's checkpoint, not the previous one.
 //
 // SPENDS AI CREDITS, so it refuses to run without `--spend`. Budget: 4 prompts
 // (pong; a `touch` allowed by a tap inside the hold; a `touch` past the hold,
@@ -54,6 +61,7 @@ const { envName } = await import(pathToFileURL(BRAND_JS).href);
 const { promptFingerprint } = await import(pathToFileURL(join(MAIN, "packages/shared/dist/index.js")).href);
 const { WebSocket } = await import(pathToFileURL(join(MAIN, "node_modules/ws/wrapper.mjs")).href);
 const { Terminal } = createRequire(join(MAIN, "package.json"))("@xterm/headless");
+const { checkpointSample } = await import(pathToFileURL(join(PLUGIN, "context.mjs")).href);
 
 const freePort = () => new Promise((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
 let PORT = await freePort();
@@ -177,7 +185,11 @@ async function main() {
       const ask = m.session.prompt?.askId;
       if (ask && !boxSeen.has(ask)) boxSeen.set(ask, Date.now());
       if (!!prev?.turnActive !== !!m.session.turnActive) {
-        const l = turnLog.get(m.session.id) ?? []; l.push({ active: !!m.session.turnActive, at: Date.now() }); turnLog.set(m.session.id, l);
+        const l = turnLog.get(m.session.id) ?? []; l.push({ active: !!m.session.turnActive, at: Date.now(), ctx: m.session.contextUsedTok ?? null, seen: [] }); turnLog.set(m.session.id, l);
+      } else {
+        // the context fill the host published in the 3 s after a turn's end (its turn-end read, then any later one)
+        const last = (turnLog.get(m.session.id) ?? []).at(-1);
+        if (last && !last.active && Date.now() - last.at < 3000) last.seen.push(m.session.contextUsedTok ?? null);
       }
     }
     if (m.t === "pty") { const t = term(m.id); if (m.full) t.reset(); t.write(Buffer.from(m.dataB64, "base64")); }
@@ -269,6 +281,16 @@ async function main() {
     return { askId, toolCallId: st?.toolCallId ?? null, startMinusBoxMs: st && box ? st.at - box : null, requestedMinusBoxMs: pr && box ? pr.at - box : null };
   };
   const footerAic = () => Number(/Session: ([\d.]+) AIC used/.exec(screen(sid))?.[1] ?? NaN);
+  /** The fill the host showed when the turn ended vs this turn's checkpoint (the freshest record). */
+  const ctxAtEnd = (label) => {
+    const end = (turnLog.get(sid) ?? []).filter((e) => !e.active).at(-1);
+    const cps = events().filter((e) => e.type === "session.usage_checkpoint");
+    const cp = checkpointSample(cps.at(-1)), prev = checkpointSample(cps.at(-2));
+    // The end edge's own update is published by setTurn BEFORE the host's turn-end context read;
+    // that read's update is the next one.
+    const shown = end ? end.seen.find((v) => v != null) ?? null : null;
+    check(end && cp && shown === cp.usedTok, `${label}: context at the turn's end is this turn's prompt`, `the turn-end read published ${shown} (the edge's own update carried ${end?.ctx}; then ${JSON.stringify(end?.seen)}) this turn=${cp?.usedTok} previous turn=${prev?.usedTok ?? "none"}`);
+  };
   const guard = (where) => { const a = Math.max(aic(), footerAic() || 0); if (a > MAX_AIC) { console.log(`ABORT: ${a} AIC spent in this session, above the ${MAX_AIC} AIC budget (after ${where})`); throw new Error("budget"); } return a; };
 
   // plan reading before (a local command: no turn, no credits)
@@ -299,7 +321,7 @@ async function main() {
     send({ t: "session.input", id: sid, ackId, submit: true, data: text });
     await until(() => inputs.has(ackId), 30000);
     const ack = inputs.get(ackId);
-    const r = { ack, ackMs: Date.now() - t0, n0, cp0 };
+    const r = { ack, ackMs: Date.now() - t0, n0, cp0, t0 };
     if (waitEnd) {
       r.ended = await until(() => events().filter((e) => e.type === "session.usage_checkpoint").length > cp0 && cur()?.turnActive === false, 120000);
       await sleep(1500);
@@ -316,6 +338,7 @@ async function main() {
   const ends1 = (p1.edges ?? []).filter((e) => !e.active).length;
   check(p1.ended && ends1 === 1, "P1 turn ends exactly once (agentStop)", `edges=${JSON.stringify((p1.edges ?? []).map((e) => e.active))}`);
   note("AIC after P1", { checkpoint: aic(), footer: footerAic() });
+  ctxAtEnd("P1");
   const start = events().find((e) => e.type === "session.start");
   note("session.start remote fields", { remoteSteerable: start?.data?.remoteSteerable, keys: start ? Object.keys(start.data).filter((k) => /remote/i.test(k)) : null });
   guard("P1");
@@ -406,11 +429,98 @@ async function main() {
   guard("P4");
   }
 
+  // ── fix/known-limits: option 2 inside the hold keeps a rule; the same command again needs no tap ──
+  const turnDone = (cp0) => until(() => ev("session.usage_checkpoint").length > cp0 && cur()?.turnActive === false, 120000);
+  if (want("rule")) {
+    historyRe ??= /probe-rule/;
+    const a = await permissionPrompt("r1", "probe-rule.txt");
+    check(!!a.box && a.box.options?.some((o) => o.index === 2 && /this exact command in this session/.test(o.label)), "rule: option 2 inside the hold says it is the plugin's rule", JSON.stringify(a.box?.options?.map((o) => o.label)));
+    tap("tapr1", 2);
+    await until(() => inputs.has("tapr1"), 10000);
+    check(inputs.get("tapr1")?.ok === true, "rule: tap 2 inside the hold answers the hook", JSON.stringify(inputs.get("tapr1")));
+    check(await until(() => fileIn("probe-rule.txt"), 30000), "rule: …the command ran");
+    await turnDone(a.p.cp0);
+    ctxAtEnd("rule 1");
+    const badge = cur()?.pluginBadges?.copilot ?? null;
+    check(badge && /probe-rule/.test(badge.text), "rule: the session row shows the rule (badge)", JSON.stringify(badge));
+    rmSync(join(repo.path, "probe-rule.txt"), { force: true });
+    const askBefore = cur()?.prompt?.askId ?? null;
+    const p2 = await prompt("r2", "Use the shell tool to run exactly this one command and nothing else: touch probe-rule.txt", { waitEnd: false });
+    let boxed = false;
+    const ran = await until(() => { if (cur()?.prompt?.askId && cur().prompt.askId !== askBefore) boxed = true; return fileIn("probe-rule.txt"); }, 60000, 50);
+    await until(() => ev("permission.requested", cmdIs("touch probe-rule.txt")).length >= 2, 10000);
+    const reqs = ev("permission.requested", cmdIs("touch probe-rule.txt"));
+    const ruleHook = ev("hook.end", (e) => e.data?.hookType === "permissionRequest").at(-1);
+    note("rule: the second permission hook", { output: ruleHook?.data?.output, ms: ruleHook ? Date.parse(ruleHook.timestamp) - Date.parse(ev("hook.start", (e) => e.data?.hookType === "permissionRequest").at(-1)?.timestamp) : null });
+    check(ran && !boxed && reqs.length >= 2 && reqs.at(-1).data.resolvedByHook === true, "rule: the same command again is allowed by the rule — no box, resolvedByHook", `ran=${ran} boxed=${boxed} requests=${reqs.length} last.resolvedByHook=${reqs.at(-1)?.data?.resolvedByHook} cmds=${JSON.stringify(ev("tool.execution_start").slice(-2).map((e) => e.data?.arguments?.command))}`);
+    if (boxed && cur()?.prompt) { tap("tapr2", 1); await until(() => inputs.has("tapr2"), 10000); }
+    await turnDone(p2.cp0);
+    ctxAtEnd("rule 2");
+    note("AIC after rule", { checkpoint: aic(), footer: footerAic() });
+    guard("rule");
+  }
+
+  // ── fix/known-limits: a file-creation tool's permission past the hold, answered by keys ──
+  if (want("write")) {
+    historyRe ??= /probe-write/;
+    const before = cur()?.prompt?.askId ?? null;
+    const p = await prompt("w1", "Create a new file named probe-write.txt whose whole content is the single word hi. Use your file creation or edit tool, not the shell.", { waitEnd: false });
+    const shown = await until(() => cur()?.prompt?.askId && cur().prompt.askId !== before, 60000, 50);
+    const box = cur()?.prompt ?? null;
+    check(shown, "write: permission published as a box", JSON.stringify(box ? { askId: box.askId, q: box.question, o: box.options } : null));
+    const hookIn = ev("hook.start", (e) => e.data?.hookType === "permissionRequest").at(-1)?.data?.input ?? null;
+    note("write: permissionRequest hook payload", hookIn ? { toolName: hookIn.toolName, toolInputKeys: Object.keys(hookIn.toolInput ?? {}), permissionSuggestions: hookIn.permissionSuggestions } : null);
+    const tuiUp = await until(() => ev("permission.requested").some((e) => e.data.resolvedByHook !== true && e.data.permissionRequest?.kind !== "shell" && Date.parse(e.timestamp) > p.t0), 30000);
+    const req = ev("permission.requested").filter((e) => e.data.resolvedByHook !== true && e.data.permissionRequest?.kind !== "shell").at(-1);
+    note("write: permission.requested", req ? { kind: req.data.permissionRequest?.kind, promptKind: req.data.promptRequest?.kind, promptKeys: Object.keys(req.data.promptRequest ?? {}), canOffer: req.data.promptRequest?.canOfferSessionApproval } : null);
+    // the terminal dialog as drawn: every 500 ms for 6 s (Copilot may draw it late)
+    const frames = [];
+    for (let i = 0; i < 12; i++) { await sleep(500); frames.push(`--- +${(i + 1) * 500} ms\n${screen(sid)}`); }
+    writeFileSync(join(OUT, "write-dialog-screen.txt"), frames.join("\n"));
+    note("write: terminal dialog on screen", [...new Set(frames.flatMap((f) => f.split("\n").filter((l) => /Do you want|^\s*[❯›>]?\s*\d\.\s|Esc to stop/.test(l)).map((l) => l.trim())))]);
+    check(tuiUp && cur()?.prompt?.askId === box?.askId, "write: past the hold the SAME box is up, in Copilot's words", JSON.stringify({ q: cur()?.prompt?.question, o: cur()?.prompt?.options }));
+    tap("tapw", 1);
+    await until(() => inputs.has("tapw"), 10000);
+    check(inputs.get("tapw")?.ok === true, "write: tap Yes past the hold → keys typed by the host", JSON.stringify(inputs.get("tapw")));
+    if (inputs.get("tapw")?.ok !== true) { send({ t: "session.input", id: sid, data: "\x1b" }); note("write", "tap refused: Esc typed by the probe to close the dialog"); }
+    const comp = () => req && ev("permission.completed", (e) => e.data.requestId === req.data.requestId)[0];
+    check(await until(() => !!comp(), 20000) && comp().data.result?.kind === "approved", "write: permission.completed approved (human_response)", JSON.stringify(comp()?.data ?? null));
+    check(await until(() => fileIn("probe-write.txt"), 30000), "write: …the file exists");
+    check(await until(() => cur()?.prompt?.askId !== box?.askId, 10000), "write: box retired");
+    await turnDone(p.cp0);
+    ctxAtEnd("write");
+    note("AIC after write", { checkpoint: aic(), footer: footerAic() });
+    guard("write");
+  }
+
+  // ── fix/known-limits: "No" past the hold is Esc ──
+  if (want("nolate")) {
+    historyRe ??= /probe-no/;
+    const a = await permissionPrompt("n1", "probe-no.txt");
+    check(!!a.box, "nolate: permission published", a.box?.askId ?? "");
+    const tuiUp = await until(() => ev("permission.requested", cmdIs("touch probe-no.txt")).some((e) => e.data.resolvedByHook !== true), 30000);
+    check(tuiUp, "nolate: hold expired → terminal dialog");
+    await sleep(800);
+    writeFileSync(join(OUT, "nolate-dialog-screen.txt"), screen(sid));
+    tap("tapn", 3);
+    await until(() => inputs.has("tapn"), 10000);
+    check(inputs.get("tapn")?.ok === true, "nolate: tap No past the hold → Esc typed by the host", JSON.stringify(inputs.get("tapn")));
+    const req = () => ev("permission.requested", cmdIs("touch probe-no.txt")).find((e) => e.data.resolvedByHook !== true);
+    const comp = () => ev("permission.completed", (e) => e.data.requestId === req()?.data?.requestId)[0];
+    check(await until(() => !!comp(), 20000) && /denied/.test(comp().data.result?.kind ?? ""), "nolate: permission.completed denied", JSON.stringify(comp()?.data ?? null));
+    check(!fileIn("probe-no.txt"), "nolate: the command did not run");
+    check(await until(() => cur()?.prompt?.askId !== a.box?.askId, 10000), "nolate: box retired");
+    await turnDone(a.p.cp0);
+    ctxAtEnd("nolate");
+    note("AIC after nolate", { checkpoint: aic(), footer: footerAic() });
+    guard("nolate");
+  }
+
   // ── readers ──────────────────────────────────────────────────────────────
   const doc = await getJson(`/api/transcript?id=${sid}&detail=full`);
-  const nPrompts = ["pong", "allow", "late", "deny"].filter(want).length;
+  const nPrompts = ["pong", "allow", "late", "deny", "write", "nolate"].filter(want).length + (want("rule") ? 2 : 0);
   check(doc.source === "backend" && doc.turns?.length === nPrompts && (!historyRe || doc.turns.some((t) => historyRe.test(JSON.stringify(t)))), "GET /api/transcript (events.jsonl fold)", `source=${doc.source} turns=${doc.turns?.length} of ${nPrompts}`);
-  const led = await getJson("/api/tokenstats/copilot?maxAge=0");
+  const led = await getJson("/api/tokenstats/copilot?fresh=1");
   const credits = led.unit ? Object.values(led.unit.perDay ?? {}).reduce((a, b) => a + b, 0) : null;
   check(led.available === true && credits > 0 && led.totals?.kinds?.input > 0 && led.totals?.kinds?.output > 0, "GET /api/tokenstats/copilot has credits + tokens", `credits=${credits} kinds=${JSON.stringify(led.totals?.kinds)} models=${JSON.stringify((led.models ?? []).map((m) => m.model ?? m.id ?? m))}`);
   note("ledger vs checkpoint", { ledgerCredits: credits, checkpoint: aic() });

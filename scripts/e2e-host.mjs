@@ -22,6 +22,11 @@
 //    box stays up; a tap makes the dialog answer `{keys:"1"}`, the HOST types
 //    the digit (WP3c) into the fake CLI, which logs `permission.completed
 //    {decisionSource: human_response}`, and that retires the box.
+//  - fix/known-limits: the context fill the host shows when a turn ends is THAT
+//    turn's checkpoint, before the (delayed) OTel span exists; option 2 inside
+//    the hold keeps the plugin's rule (badge on the session row) and the same
+//    command again is allowed with no box; a file write past the hold is
+//    answered by `1` typed by the host; "No" past the hold is Esc.
 //
 // E2E_TRACE=1 prints every session update and the delivery ack, timestamped.
 //
@@ -82,7 +87,7 @@ const finish = () => {
     process.exit(failed ? 1 : 0);
   }, 500);
 };
-setTimeout(() => { console.log("FAIL: timeout"); failed = true; host.kill("SIGKILL"); finish(); }, 150_000).unref();
+setTimeout(() => { console.log("FAIL: timeout"); failed = true; host.kill("SIGKILL"); finish(); }, 240_000).unref();
 
 try {
   // the host is up when /api/health answers
@@ -97,12 +102,19 @@ try {
   let backends = null, plugins = null;
   const sessions = new Map(), ops = new Map(), inputs = new Map(), created = [];
   const seenTurn = new Set();
+  const endCtx = new Map(); // session → the context fills published since its last turn ended, in order
   ws.on("message", (raw) => {
     const m = JSON.parse(raw.toString());
     if (m.t === "backends") backends = m.list;
     if (m.t === "plugin.list") plugins = m.plugins;
     if (m.t === "session.created") { created.push(m.session); sessions.set(m.session.id, m.session); }
-    if (m.t === "session.updated") { sessions.set(m.session.id, m.session); if (m.session.turnActive) seenTurn.add(m.session.id); if (process.env.E2E_TRACE) console.log(Date.now() % 100000, "upd", m.session.turnActive, m.session.hooked, m.session.idle); }
+    if (m.t === "session.updated") {
+      const was = sessions.get(m.session.id)?.turnActive;
+      // after a turn's end: the fills published by the host's turn-end read and later (the end edge's
+      // own update comes from setTurn, before that read, and is not counted)
+      if (was && !m.session.turnActive) endCtx.set(m.session.id, []);
+      else if (!m.session.turnActive) endCtx.get(m.session.id)?.push(m.session.contextUsedTok ?? null);
+      sessions.set(m.session.id, m.session); if (m.session.turnActive) seenTurn.add(m.session.id); if (process.env.E2E_TRACE) console.log(Date.now() % 100000, "upd", m.session.turnActive, m.session.hooked, m.session.idle, m.session.contextUsedTok); }
     if (process.env.E2E_TRACE && m.t === "input.ack") console.log(Date.now() % 100000, "ack", m.ok);
     if (m.t === "op.ack") ops.set(m.ackId, m);
     if (m.t === "input.ack") inputs.set(m.ackId, m);
@@ -144,7 +156,12 @@ try {
   const doc = await getJson(`/api/transcript?id=${sid}&detail=full`);
   check(doc.source === "backend" && doc.turns?.some((t) => t.prompt === "say hello from the e2e" && t.blocks.some((b) => b.kind === "text" && b.text === "ok: say hello from the e2e")),
     `GET /api/transcript is the events.jsonl fold (source=${doc.source}, turns=${doc.turns?.length})`);
-  const ledger = await getJson("/api/tokenstats/copilot");
+  // the fill at the turn's end: this turn's checkpoint, while the fake's OTel span is still unflushed (2.5 s)
+  const firstCtx = () => (endCtx.get(sid) ?? []).find((v) => v != null);
+  check(await until(() => firstCtx() != null, 2000) && firstCtx() === 1000,
+    `the context fill at the turn's end is this turn's (checkpoint 1000; published ${JSON.stringify(endCtx.get(sid))})`);
+  let ledger = {};
+  await until(() => { void getJson("/api/tokenstats/copilot?fresh=1").then((l) => { ledger = l; }); return ledger.totals?.kinds?.input > 0; }, 8000);
   check(ledger.available === true && ledger.unit?.name === "AI credits" && Math.abs(Object.values(ledger.unit.perDay).reduce((a, b) => a + b, 0) - 0.1) < 1e-6,
     `GET /api/tokenstats/copilot has the AI credits in their own unit (${JSON.stringify(ledger.unit)})`);
   check(ledger.totals?.kinds?.input > 0 && ledger.totals.kinds.output > 0 && ledger.models?.length === 1, `…and the tokens per model beside them (${JSON.stringify(ledger.totals?.kinds)})`);
@@ -188,6 +205,50 @@ try {
   check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId3).length === 1, 10000), "the fake CLI received the digit and answered its dialog");
   check(evOf("permission.completed", (e) => e.data.toolCallId === askId3)[0]?.data.decisionSource === "human_response", "…decisionSource human_response");
   check(await until(() => cur()?.prompt?.askId !== askId3, 5000), `permission.completed retires the box (prompt=${JSON.stringify(cur()?.prompt)})`);
+  await until(() => cur()?.turnActive === false, 10000);
+
+  // fix/known-limits #1: option 2 inside the hold → the plugin's rule; the same command again needs no tap.
+  send({ t: "session.input", id: sid, ackId: "p4", submit: true, data: "run: touch e2e-rule.txt" });
+  check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? "") && cur().prompt.askId !== askId3, 15000), "rule: a third permission is published");
+  const askId4 = cur()?.prompt?.askId;
+  check(/this exact command in this session/.test(cur()?.prompt?.options?.[1]?.label ?? ""), `rule: option 2 inside the hold says it is the plugin's rule (${cur()?.prompt?.options?.[1]?.label})`);
+  tap("tap4", 2);
+  check(await until(() => inputs.get("tap4")?.ok === true, 10000), `rule: tap 2 answers the hook (${JSON.stringify(inputs.get("tap4"))})`);
+  const rule = (e) => e.data.permissionRequest?.fullCommandText === "touch e2e-rule.txt";
+  check(await until(() => evOf("permission.requested", rule)[0]?.data.resolvedByHook === true, 10000), "rule: …allowed through the hook");
+  check(await until(() => /touch e2e-rule\.txt/.test(cur()?.pluginBadges?.copilot?.text ?? ""), 5000), `rule: the session row shows it (${JSON.stringify(cur()?.pluginBadges)})`);
+  await until(() => cur()?.turnActive === false, 10000);
+  let boxed = false;
+  send({ t: "session.input", id: sid, ackId: "p5", submit: true, data: "run: touch e2e-rule.txt" });
+  check(await until(() => { if (cur()?.prompt?.askId && cur().prompt.askId !== askId4) boxed = true; return evOf("permission.requested", rule).length === 2; }, 15000), "rule: the same command again reaches Copilot's permission step…");
+  check(!boxed && evOf("permission.requested", rule)[1]?.data.resolvedByHook === true, `rule: …answered by the rule: no box, resolvedByHook (boxed=${boxed})`);
+  await until(() => cur()?.turnActive === false, 10000);
+
+  // fix/known-limits #2: a non-shell (file write) dialog past the hold, answered by keys the host types.
+  send({ t: "session.input", id: sid, ackId: "p6", submit: true, data: "write: e2e-write.txt" });
+  check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? "") && cur().prompt.askId !== askId4, 15000), `write: the held request is published under the tool call's id (${JSON.stringify(cur()?.prompt)})`);
+  const askId6 = cur()?.prompt?.askId;
+  const wr = (e) => e.data.permissionRequest?.kind === "write";
+  check(await until(() => evOf("permission.requested", wr).length === 1, 15000), "write: the hold runs out, Copilot shows its dialog");
+  check(await until(() => /^Do you want to create .*e2e-write\.txt\?/.test(cur()?.prompt?.question ?? ""), 5000), `write: the SAME box now asks in Copilot's words (${JSON.stringify(cur()?.prompt?.question)})`);
+  tap("tap6", 1);
+  check(await until(() => inputs.get("tap6")?.ok === true, 10000), `write: tap Yes → {keys:"1"} typed by the host (${JSON.stringify(inputs.get("tap6"))})`);
+  check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId6)[0]?.data.result.kind === "approved", 10000) && existsSync(join(repo.path, "e2e-write.txt")), "write: approved, the file exists");
+  check(await until(() => cur()?.prompt?.askId !== askId6, 5000), "write: box retired");
+  await until(() => cur()?.turnActive === false, 10000);
+
+  // fix/known-limits #2: "No" past the hold is Esc (its digit only opens the reason field).
+  send({ t: "session.input", id: sid, ackId: "p7", submit: true, data: "run: touch e2e-no.txt" });
+  check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? "") && cur().prompt.askId !== askId6, 15000), "nolate: published");
+  const askId7 = cur()?.prompt?.askId;
+  const no = (e) => e.data.permissionRequest?.fullCommandText === "touch e2e-no.txt";
+  check(await until(() => evOf("permission.requested", no).length === 1, 15000), "nolate: the hold runs out");
+  await sleep(700);
+  tap("tap7", 3);
+  check(await until(() => inputs.get("tap7")?.ok === true, 10000), `nolate: tap No → Esc typed by the host (${JSON.stringify(inputs.get("tap7"))})`);
+  check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId7)[0]?.data.result.kind === "cancelled", 10000) && !existsSync(join(repo.path, "e2e-no.txt")), "nolate: cancelled (Esc stops the turn), nothing ran");
+  check(await until(() => cur()?.turnActive === false && cur()?.prompt?.askId !== askId7, 10000), `nolate: the aborted turn ends with no agentStop (turnActive=${cur()?.turnActive})`);
+  check(await until(() => firstCtx() === 7000, 3000), `nolate: …and its end reads that turn's checkpoint (7000; published ${JSON.stringify(endCtx.get(sid))})`);
   ws.close();
 } catch (e) {
   console.log("FAIL: threw", e);

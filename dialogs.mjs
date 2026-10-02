@@ -39,19 +39,36 @@
  *   don't ask again for <cmd> in this repo` / `3. No, and tell Copilot what to
  *   do differently (Esc to stop)`.
  *
- * NOT measured, and therefore said rather than pretended:
- * - the hook protocol has no "don't ask again" answer (only allow/deny), so
- *   option 2 tapped during the hold allows THIS command once — its `desc` says
- *   so on the phone. At the terminal dialog option 2 is the real thing.
- * - the TUI dialog for a non-shell tool was never seen: such a request is
- *   answered by the hook (allow/deny is tool-agnostic), and past the hold its
- *   `answer()` refuses in words — no digit is pressed into an unmeasured box.
+ * Read from the 1.0.91 bundle (app.js, its dialog components) and checked against
+ * the real CLI where README "Measured on 1.0.91 — fix/known-limits" says so:
+ * - every kind answered here at the terminal (`TUI_KINDS`) is ONE list:
+ *   `1. Yes`, an optional "don't ask again" row, and LAST a "No, and tell
+ *   Copilot …" row that takes a typed reason. A digit COMMITS the rows before
+ *   it but only HIGHLIGHTS the last one (its text field opens); Esc answers it
+ *   with no reason — and STOPS the turn (measured: `cancelled "Session aborted"`,
+ *   `abort`, no agentStop; `onAbort` reports it). So "No" past the hold is Esc,
+ *   never its digit, and its label says it stops.
+ * - a shell request's "don't ask again" row is there only when
+ *   `canOfferSessionApproval` and not `managedApprovalRequired`; without it
+ *   the list is Yes / No and a "2" would open No's text field.
+ * - the hook OUTPUT has no "don't ask again" (allow/deny + message + interrupt;
+ *   nothing persists a rule). So option 2 tapped DURING the hold is the
+ *   plugin's own rule (`rules`): this exact command line, this host session,
+ *   memory only, shown on the session row (`onRule` → badge + decision log)
+ *   and dropped by the "Forget allow rules" session action.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { eventsPath } from "./paths.mjs";
 
-/** The keystroke per option in Copilot's numbered dialog: the digit alone, NO Return (measured). */
-export const DIALOG_KEYS = Object.freeze({ 1: "1", 2: "2", 3: "3" });
+/**
+ * The keys per phone option at Copilot's terminal dialog: Yes and "don't ask again" are the
+ * digit alone, NO Return (measured); No is Esc — its digit only opens the row's text field
+ * (1.0.91 source: the list's last row is highlighted on its digit, not committed).
+ */
+export const DIALOG_KEYS = Object.freeze({ 1: "1", 2: "2", 3: "\x1b" });
+
+/** The `promptRequest.kind`s whose terminal dialog is that Yes … / No list (1.0.91 source). */
+export const TUI_KINDS = new Set(["commands", "write", "mcp", "memory", "custom-tool"]);
 
 /** How often a watched session's events.jsonl is read for new lines. */
 export const EVENTS_POLL_MS = 500;
@@ -73,21 +90,61 @@ export const KEYS_SETTLE_MS = 4000;
 /** What the model is told when a person denies from the phone. */
 export const DENY_MESSAGE = "The user denied this from their phone. Do not run it; ask what to do instead.";
 
-const ONCE_NOTE = "From the phone while Copilot waits, this allows this one command only: Copilot's permission hook has no \"don't ask again\" answer. Choose it at the terminal dialog to make it stick.";
+/** Option 2 while Copilot waits on the hook: the plugin's own rule, and said to be. */
+export const RULE_LABEL = "Yes, and don't ask again for this exact command in this session";
+export const RULE_NOTE = "Copilot's permission hook can only allow once, so waterplane keeps this rule, not Copilot: until this session ends, this exact command line is allowed without asking. The session row shows it; \"Forget allow rules\" in the session menu drops it. At the terminal dialog option 2 is Copilot's own rule for the command in this repo.";
+/** "No" at the terminal dialog, from the phone: Esc — which STOPS the turn (measured), so it says so. */
+export const NO_STOP_LABEL = "No, and stop this turn (Esc)";
+const ESC_NOTE = "From the phone this presses Esc, the dialog's own \"Esc to stop\": Copilot cancels this request and stops the turn. To tell it what to do instead, send a prompt after it stops — or answer at the terminal, where option 3 takes a typed reason.";
 
-/** The dialog's own option words (1.0.91), for the phone to show verbatim. `ident` is the command's first word. */
-export function shellOptions(ident, phase) {
-  return [
-    { index: 1, label: "Yes" },
-    { index: 2, label: `Yes, and don't ask again for ${ident || "this command"} in this repo`, ...(phase === "hook" ? { desc: ONCE_NOTE } : {}) },
-    { index: 3, label: "No, and tell Copilot what to do differently" },
-  ];
+/**
+ * A shell dialog's options for the phone. Terminal phase: the CLI's own words (1.0.91), row 2
+ * only when Copilot shows it (`offersRule`). Hook phase: row 2 is the plugin's rule.
+ * `ident` is the command's first word.
+ */
+export function shellOptions(ident, phase, { offersRule = true } = {}) {
+  const out = [{ index: 1, label: "Yes" }];
+  if (phase === "hook") out.push({ index: 2, label: RULE_LABEL, desc: RULE_NOTE });
+  else if (offersRule) out.push({ index: 2, label: `Yes, and don't ask again for ${ident || "this command"} in this repo` });
+  out.push(phase === "hook" ? { index: 3, label: "No, and tell Copilot what to do differently" } : { index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE });
+  return out;
 }
-/** A non-shell tool: only the hook's two answers, which are tool-agnostic. */
+/** A non-shell tool: Yes / No — the hook's two answers; at the terminal, row 1 and Esc. */
 export const TOOL_OPTIONS = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, label: "No" }]);
+const TOOL_OPTIONS_TUI = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE }]);
 
 const str = (v) => (typeof v === "string" && v.trim() ? v : null);
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+/** The verbs Copilot's write dialog uses for its intentions (1.0.91 source). */
+const WRITE_VERBS = new Map([["Create file", "create"], ["Delete file", "delete"], ["Edit file", "edit"], ["Move and update file", "move and update"], ["Update file", "update"], ["Write file", "write"]]);
+
+/** The terminal dialog's own question for a non-shell `promptRequest`, or null for a kind not answered here. */
+export function tuiQuestion(p) {
+  if (!p || typeof p !== "object") return null;
+  const args = (a) => (a != null ? clip(typeof a === "string" ? a : JSON.stringify(a), 400) : null);
+  switch (p.kind) {
+    case "write": {
+      const head = String(p.intention ?? "").split(":", 1)[0].trim();
+      const v = WRITE_VERBS.get(head);
+      const q = v ? `Do you want to ${v} ${p.fileName}?` : head ? `Do you want to perform "${p.intention}" on ${p.fileName}?` : `Do you want to modify ${p.fileName}?`;
+      return [q, str(p.diff) ? clip(p.diff, 600) : null].filter(Boolean).join("\n");
+    }
+    case "mcp": return [`${p.toolTitle ?? p.toolName} (${p.serverName})`, args(p.args), "Do you want to use this tool?"].filter(Boolean).join("\n");
+    case "custom-tool": return [`Run extension tool "${p.toolName}"`, str(p.toolDescription), args(p.args)].filter(Boolean).join("\n");
+    case "memory": return ["Allow Copilot to store this memory?", str(p.fact)].filter(Boolean).join("\n");
+    default: return null;
+  }
+}
+
+/** Why a terminal dialog cannot be answered by keys from the phone, or null when it can. */
+function tuiRefusal(r) {
+  const p = r.prompt;
+  if (!p) return r.shell ? null : `Copilot has not said what kind of ${r.toolName} dialog this is yet — try again in a moment`;
+  if (!TUI_KINDS.has(p.kind)) return `Copilot's ${p.kind} dialog is not one the phone can answer — answer it at the terminal`;
+  if (p.requestSandboxBypass === true || p.requestSandboxPermissive === true) return "this dialog asks to leave the sandbox, which the phone does not answer — answer it at the terminal";
+  return null;
+}
 
 /** The first command word Copilot would name in option 2: a non-read-only identifier if it listed them. */
 function identOf(command, commands) {
@@ -101,9 +158,18 @@ function identOf(command, commands) {
 /** The question, in the CLI's words where it has them. */
 function questionOf(r) {
   if (r.shell) return ["Do you want to run this command?", r.command, r.intention].filter(Boolean).join("\n");
+  const tq = r.phase !== "hook" ? tuiQuestion(r.prompt) : null;
+  if (tq) return tq;
+  const file = pathOf(r.toolInput);
+  // measured (1.0.91): a file edit's hook is `edit {file_path, diff}`, while its tool call is `apply_patch`
+  if (file) return [`Copilot asks permission to ${r.toolName} ${file}.`, str(r.toolInput.diff) ? clip(r.toolInput.diff.trim(), 600) : null].filter(Boolean).join("\n");
   const input = r.toolInput && typeof r.toolInput === "object" ? clip(JSON.stringify(r.toolInput), 400) : null;
   return [`Copilot asks permission to use ${r.toolName}.`, input].filter(Boolean).join("\n");
 }
+
+const SHELL_TOOLS = new Set(["bash", "shell", "powershell"]);
+/** The file a non-shell hook input is about (`edit {file_path}` measured; `path` / `fileName` tolerated). */
+const pathOf = (input) => (input && typeof input === "object" ? str(input.file_path) ?? str(input.path) ?? str(input.fileName) : null);
 
 /**
  * The complete lines of `path` from byte `from` (or from the last `max` bytes,
@@ -128,12 +194,15 @@ function readLines(path, from, max) {
   } finally { closeSync(fd); }
 }
 
-export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now } = {}) {
+export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now, onRule = () => {}, onAbort = () => {} } = {}) {
   const homeDir = () => (typeof home === "function" ? home() : home);
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [] });
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], rules: new Map() });
+  const tellRule = (slot, type, rule) => {
+    try { onRule(slot, { type, rule: rule ? { ...rule } : null, rules: [...st(slot).rules.values()].map((x) => ({ ...x })) }); } catch { /* the host's fault */ }
+  };
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
   const publish = (slot, r) => emit(slot, (w) => w.asked(r.dialog));
@@ -150,35 +219,49 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       id: f.id, toolCallId: f.toolCallId ?? null, requestId: f.requestId ?? null,
       toolName: f.toolName, shell: f.shell, command: f.command ?? null, intention: f.intention ?? null,
       toolInput: f.toolInput ?? null, ident: identOf(f.command, f.commands),
-      phase: f.phase, confirmed: !!f.confirmed, typedAt: null, settle: null, at: now(),
+      phase: f.phase, confirmed: !!f.confirmed, typedAt: null, settle: null, at: now(), prompt: null, offersRule: true,
     };
-    const options = () => (r.shell ? shellOptions(r.ident, r.phase) : TOOL_OPTIONS);
+    setPrompt(r, f.prompt, f.permissionRequest);
     r.dialog = {
-      id: r.id, kind: "tool", question: questionOf(r),
-      get options() { return options(); },
+      id: r.id, kind: "tool",
+      get question() { return questionOf(r); },
+      get options() { return optionsOf(r); },
       answer: (choice) => answer(slot, r, choice),
     };
     return r;
   }
 
+  const optionsOf = (r) => (r.shell ? shellOptions(r.ident, r.phase, { offersRule: r.offersRule }) : r.phase === "hook" ? TOOL_OPTIONS : TOOL_OPTIONS_TUI);
+
+  /** What `permission.requested` says the terminal dialog is: its `promptRequest`, and whether a shell one has row 2. */
+  function setPrompt(r, prompt, pr) {
+    if (!prompt || typeof prompt !== "object") return;
+    r.prompt = prompt;
+    const offer = prompt.canOfferSessionApproval ?? pr?.canOfferSessionApproval;
+    r.offersRule = offer !== false && prompt.managedApprovalRequired !== true && pr?.managedApprovalRequired !== true;
+    if (Array.isArray(prompt.commandIdentifiers) && str(prompt.commandIdentifiers[0])) r.ident = prompt.commandIdentifiers.join(", ");
+  }
+
   async function answer(slot, r, choice) {
     if (r.phase === "done") return { ok: false, reason: "that question is no longer open — it was answered or withdrawn" };
-    const allowed = (r.shell ? shellOptions(r.ident, r.phase) : TOOL_OPTIONS).map((o) => o.index);
+    const allowed = optionsOf(r).map((o) => o.index);
     if (!allowed.includes(choice)) return { ok: false, reason: `${choice} is not one of this dialog's options` };
     if (r.phase === "hook" && r.settle) {
       const settle = r.settle;
-      // Choice 2 is allow-ONCE here: the hook has no "don't ask again" answer (see the option's desc).
+      // Choice 2 here is allow + the plugin's own rule for this exact command (the hook cannot persist one).
+      if (choice === 2 && r.shell && r.command) addRule(slot, r);
       settle(choice === 3 ? { behavior: "deny", message: DENY_MESSAGE } : { behavior: "allow" });
       retire(slot, r);
       return { ok: true };
     }
     // tui phase: Copilot is showing its own dialog; the only route left is the keystroke.
     if (slot.health.state !== "up") return { ok: false, reason: "Copilot's channel is down, so this dialog cannot be answered from the phone — answer it at the terminal" };
-    if (!r.shell) return { ok: false, reason: `Copilot is asking about ${r.toolName} in the terminal, and that dialog was never measured — answer it at the terminal` };
     if (r.typedAt != null && now() - r.typedAt < KEYS_SETTLE_MS) return { ok: false, reason: "already answered from the phone — waiting for Copilot to confirm it" };
     readTail(slot);
     if (r.phase === "done") return { ok: false, reason: "that question is no longer open — it was answered or withdrawn" };
     if (!r.confirmed) return { ok: false, reason: "Copilot has not shown its dialog in the terminal yet — try again in a moment" };
+    const no = tuiRefusal(r);
+    if (no) return { ok: false, reason: no };
     const front = [...st(slot).open.values()].find((x) => x.phase === "tui");
     if (front !== r) return { ok: false, reason: "another Copilot dialog is in front of this one in the terminal — answer that one first" };
     // The host types these (answerBox → core.input), once, while this dialog is still open.
@@ -192,6 +275,39 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     r.phase = "tui";
     r.settle = null;
     publish(slot, r); // same id; option 2 loses its allow-once note
+  }
+
+  // ── the plugin's own "don't ask again" (hook phase only) ────────────────────
+
+  function addRule(slot, r) {
+    const rules = st(slot).rules;
+    if (rules.has(r.command)) return;
+    const rule = { command: r.command, toolName: r.toolName, at: now(), uses: 0 };
+    rules.set(r.command, rule);
+    tellRule(slot, "added", rule);
+  }
+
+  /** A permission hook a rule of this session covers: `{behavior:"allow"}` and a `used` record; else null. */
+  function ruleFor(slot, payload) {
+    const toolName = str(payload?.toolName);
+    if (toolName !== "bash" && toolName !== "shell" && toolName !== "powershell") return null;
+    const command = str(payload?.toolInput?.command);
+    const rule = command ? st(slot).rules.get(command) : null;
+    if (!rule) return null;
+    rule.uses++;
+    rule.lastAt = now();
+    tellRule(slot, "used", rule);
+    return { behavior: "allow" };
+  }
+
+  /** Drop every rule of this session (the session action, or the session ending). Returns how many. */
+  function clearRules(slot, why = "cleared") {
+    const rules = st(slot).rules;
+    const n = rules.size;
+    if (!n) return 0;
+    rules.clear();
+    tellRule(slot, why, null);
+    return n;
   }
 
   const findOpen = (slot, pred) => { for (const r of st(slot).open.values()) if (pred(r)) return r; return null; };
@@ -209,13 +325,22 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         const pr = d.permissionRequest && typeof d.permissionRequest === "object" ? d.permissionRequest : {};
         const tcid = str(pr.toolCallId);
         const cmd = str(pr.fullCommandText);
-        const r = findOpen(slot, (x) => (tcid && x.toolCallId === tcid) || (!x.toolCallId && cmd && x.command === cmd && !x.requestId));
+        let r = findOpen(slot, (x) => (tcid && x.toolCallId === tcid) || (!x.toolCallId && cmd && x.command === cmd && !x.requestId));
+        if (!r && pr.kind !== "shell") {
+          // a non-shell box published under a minted id: the same file, else the only such box
+          const loose = [...st(slot).open.values()].filter((x) => !x.shell && !x.toolCallId && !x.requestId && x.phase !== "done");
+          const file = str(pr.fileName);
+          r = (file && loose.find((x) => pathOf(x.toolInput) === file)) || (loose.length === 1 && !pathOf(loose[0].toolInput) ? loose[0] : null);
+        }
         if (d.resolvedByHook === true) { if (r) drop(r); return; } // decided by a hook: never the phone's question
         if (r) {
           r.requestId = str(d.requestId);
           if (tcid) r.toolCallId = tcid;
           r.confirmed = true;
+          const before = JSON.stringify([r.dialog.question, r.dialog.options]);
+          setPrompt(r, d.promptRequest, pr);
           if (r.phase === "hook") { if (quiet) { r.phase = "tui"; r.settle = null; } else toTui(slot, r); }
+          else if (!quiet && JSON.stringify([r.dialog.question, r.dialog.options]) !== before) publish(slot, r); // now in Copilot's own words
           return;
         }
         const shell = pr.kind === "shell";
@@ -224,6 +349,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         const nr = makeRecord(slot, {
           id, toolCallId: tcid, requestId: str(d.requestId), toolName: shell ? "bash" : (str(pr.kind) ?? "a tool"), shell,
           command: cmd, intention: str(pr.intention), commands: pr.commands, toolInput: shell ? null : pr, phase: "tui", confirmed: true,
+          prompt: d.promptRequest, permissionRequest: pr,
         });
         s.open.set(nr.id, nr);
         if (!quiet) publish(slot, nr);
@@ -247,6 +373,12 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         const tcid = str(d.toolCallId);
         const r = tcid ? findOpen(slot, (x) => x.toolCallId === tcid) : null;
         if (r && r.phase !== "hook") drop(r);
+        return;
+      }
+      case "abort": {
+        // Esc at a dialog (or in the composer) aborts the turn, and Copilot then fires NO agentStop
+        // (measured: permission.completed "cancelled", assistant.turn_end, abort, usage_checkpoint).
+        if (!quiet) { const at = Date.parse(e.timestamp); try { onAbort(slot, Number.isFinite(at) ? at : now()); } catch { /* the host's fault */ } }
         return;
       }
       case "session.shutdown": case "session.start": case "session.resume":
@@ -284,16 +416,24 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     readTail(slot);
     const s = st(slot);
     const done = new Set();
+    const shell = SHELL_TOOLS.has(toolName);
+    const others = [];
     for (let i = s.recent.length - 1; i >= 0; i--) {
       const e = s.recent[i], d = e.data ?? {};
       if (e.type !== "tool.execution_start") { if (str(d.toolCallId)) done.add(d.toolCallId); if (str(d.permissionRequest?.toolCallId)) done.add(d.permissionRequest.toolCallId); continue; }
       const tcid = str(d.toolCallId);
       if (!tcid || done.has(tcid) || s.open.has(tcid)) continue;
+      if (!shell) {
+        // A non-shell hook names its tool differently from the call (measured: hook `edit`, call
+        // `apply_patch`), so the call is taken only when it is the ONE unanswered non-shell call.
+        if (!SHELL_TOOLS.has(d.toolName)) others.push(tcid);
+        continue;
+      }
       if (toolName && d.toolName && d.toolName !== toolName) continue;
       if (command && d.arguments?.command !== command) continue;
       return { toolCallId: tcid, intention: str(d.arguments?.description) };
     }
-    return null;
+    return !shell && others.length === 1 ? { toolCallId: others[0], intention: null } : null;
   }
 
   // ── the hook ────────────────────────────────────────────────────────────
@@ -301,7 +441,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   function answerHook(slot, payload, hold) {
     const toolName = str(payload?.toolName);
     const toolInput = payload?.toolInput && typeof payload.toolInput === "object" ? payload.toolInput : null;
-    const shell = toolName === "bash" || toolName === "shell" || toolName === "powershell";
+    const shell = SHELL_TOOLS.has(toolName);
     const command = shell ? str(toolInput?.command) : null;
     // Too little to ask anybody, or no hold to wait on: Copilot shows its own dialog.
     if (!toolName || (shell && !command) || !hold || typeof hold.onExpired !== "function") return {};
@@ -345,7 +485,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       if (h) {
         r.id = r.dialog.id = h.toolCallId;
         r.toolCallId = h.toolCallId;
-        if (h.intention) { r.intention = h.intention; r.dialog.question = questionOf(r); }
+        if (h.intention) r.intention = h.intention;
         go();
       } else if (now() - t0 >= toolCallWaitMs) go();
       else setTimeout(look, TOOLCALL_STEP_MS).unref?.();
@@ -384,5 +524,5 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     },
   };
 
-  return { answerHook, onEvent, readTail, retireAll, poke, source };
+  return { answerHook, ruleFor, clearRules, rules: (slot) => [...st(slot).rules.values()].map((x) => ({ ...x })), onEvent, readTail, retireAll, poke, source };
 }

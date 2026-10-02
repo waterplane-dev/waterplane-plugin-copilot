@@ -85,5 +85,8 @@ export function createRouter({ now = Date.now } = {}) {
     for (const h of slot.healths) { try { h(slot.health); } catch { /* a listener's fault is its own */ } }
   }
 
-  return { slotFor, release, route, setHealth, _byId: byId, _unbound: unbound };
+  /** The slot of a host session id, if one exists — never creates one. */
+  const peek = (hostId) => byHost.get(hostId) ?? null;
+
+  return { slotFor, peek, release, route, setHealth, _byId: byId, _unbound: unbound };
 }

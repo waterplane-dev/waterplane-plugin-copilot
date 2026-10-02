@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRouter } from "../router.mjs";
-import { createDialogs, DENY_MESSAGE, DIALOG_KEYS } from "../dialogs.mjs";
+import { createDialogs, DENY_MESSAGE, DIALOG_KEYS, RULE_LABEL, tuiQuestion } from "../dialogs.mjs";
 import { fakeHold } from "./fakeapi.mjs";
 
 const FIX = readFileSync(new URL("./fixtures/copilot-1.0.91/events-1091.jsonl", import.meta.url), "utf8").split("\n");
@@ -27,7 +27,7 @@ function wrap(d) {
   return { ...d, options: d.options, answer: async (c) => { const res = await d.answer(c); if (res && "keys" in res) typedSink?.push(res.keys); return res; } };
 }
 
-function rig({ up = true, clock = null, toolCallWaitMs = 0 } = {}) {
+function rig({ up = true, clock = null, toolCallWaitMs = 0, onRule } = {}) {
   const home = mkdtempSync(join(tmpdir(), "copilot-dialogs-"));
   const dir = join(home, "session-state", ID);
   mkdirSync(dir, { recursive: true });
@@ -39,7 +39,7 @@ function rig({ up = true, clock = null, toolCallWaitMs = 0 } = {}) {
   if (up) router.setHealth(slot, "up");
   const typed = []; // what the host would type: every `{keys}` an answer handed back
   typedSink = typed;
-  const dialogs = createDialogs({ router, home, pollMs: 60_000, toolCallWaitMs, ...(clock ? { now: clock } : {}) });
+  const dialogs = createDialogs({ router, home, pollMs: 60_000, toolCallWaitMs, ...(clock ? { now: clock } : {}), ...(onRule ? { onRule } : {}) });
   const asked = [], resolved = [];
   const off = dialogs.source.watch(ss, { asked: (d) => asked.push(wrap(d)), resolved: (id) => resolved.push(id) });
   const append = (...xs) => appendFileSync(file, xs.map((x) => (typeof x === "number" ? line(x) : JSON.stringify(x))).join("\n") + "\n");
@@ -59,8 +59,8 @@ test("hold + tap Yes: the held hook answers allow, the dialog is retired, and th
   assert.equal(d.kind, "tool");
   assert.match(d.question, /^Do you want to run this command\?\ntouch c0\.txt && echo done\nCreate c0\.txt and print done$/);
   assert.deepEqual(d.options.map((o) => o.index), [1, 2, 3]);
-  assert.equal(d.options[1].label, "Yes, and don't ask again for touch in this repo");
-  assert.match(d.options[1].desc, /this one command only/, "allow-once is SAID, never pretended");
+  assert.equal(d.options[1].label, RULE_LABEL, "during the hold option 2 is the plugin's rule, and says so");
+  assert.match(d.options[1].desc, /waterplane keeps this rule, not Copilot/);
   assert.deepEqual(await d.answer(1), { ok: true });
   assert.deepEqual(await held, { behavior: "allow" });
   assert.deepEqual(r.resolved, [C0]);
@@ -100,7 +100,8 @@ test("expiry: the SAME dialog stays, and its answer becomes the digit alone, onc
   hold._expire(); // the core answered {} itself
   assert.equal(r.asked.length, 2, "re-published…");
   assert.equal(r.asked[1].id, C1, "…under the same id");
-  assert.equal(r.asked[1].options[1].desc, undefined, "at the terminal option 2 is the real 'don't ask again'");
+  assert.equal(r.asked[1].options[1].label, "Yes, and don't ask again for touch in this repo", "at the terminal option 2 is Copilot's own 'don't ask again'");
+  assert.equal(r.asked[1].options[1].desc, undefined);
   assert.match((await d.answer(1)).reason, /not shown its dialog in the terminal yet/);
   assert.deepEqual(r.typed, [], "no digit before the dialog is up — it would land in the composer");
 
@@ -130,7 +131,7 @@ test("expiry: keys that did not land may be retried once the settle window has p
   r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), hold);
   hold._expire();
   r.append(73);
-  assert.deepEqual(await r.asked[0].answer(3), { keys: "3" });
+  assert.deepEqual(await r.asked[0].answer(3), { keys: "\x1b" }, "No past the hold is Esc: its digit only opens the reason field");
   t += 1000;
   assert.match((await r.asked[0].answer(3)).reason, /already answered/);
   t += 5000;
@@ -185,7 +186,7 @@ test("a second dialog while one is held: both published in order, each answered 
   const ha = r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), fakeHold());
   const hb = r.dialogs.answerHook(r.slot, payloadFor("rm b.txt"), fakeHold());
   assert.deepEqual(r.asked.map((d) => d.id), ["call_A", "call_B"]);
-  assert.equal(r.asked[1].options[1].label, "Yes, and don't ask again for rm in this repo");
+  assert.equal(r.asked[1].options[1].label, RULE_LABEL);
   assert.deepEqual((await r.dialogs.source.pending(r.ss)).map((d) => d.id), ["call_A", "call_B"]);
   await r.asked[0].answer(1);
   assert.deepEqual(await ha, { behavior: "allow" });
@@ -219,20 +220,18 @@ test("too little to ask: no command, or no hold ⇒ {} at once (Copilot shows it
   r.off();
 });
 
-test("a non-shell tool: the hook's two answers during the hold; past it, a refusal — no digit into an unmeasured box", async () => {
+test("a non-shell tool, hook phase: Yes / No are the hook's answers; there is no rule to keep", async () => {
   const r = rig();
   r.tick();
-  const hold = fakeHold();
-  const held = r.dialogs.answerHook(r.slot, { ...SAMPLE, toolName: "write", toolInput: { path: "a.txt" } }, hold);
+  const held = r.dialogs.answerHook(r.slot, { ...SAMPLE, toolName: "write", toolInput: { path: "a.txt" } }, fakeHold());
   const d = r.asked[0];
   assert.match(d.id, /^copilot-perm-/, "no tool.execution_start found ⇒ a minted id");
   assert.deepEqual(d.options.map((o) => o.index), [1, 3]);
-  assert.match(d.question, /permission to use write/);
-  hold._expire();
-  const res = await d.answer(1);
-  assert.match(res.reason, /never measured/);
-  assert.deepEqual(r.typed, []);
-  void held;
+  assert.match(d.question, /permission to write a\.txt/);
+  assert.match((await d.answer(2)).reason, /not one of this dialog's options/);
+  assert.deepEqual(await d.answer(3), { ok: true });
+  assert.equal((await held).behavior, "deny");
+  assert.deepEqual(r.dialogs.rules(r.slot), []);
   r.off();
 });
 
@@ -295,4 +294,132 @@ test("a hook re-fired for a call whose dialog is already held: one dialog, the n
   assert.deepEqual(await r.asked[0].answer(1), { ok: true });
   assert.deepEqual(await held2, { behavior: "allow" }, "the tap answers the NEW hook");
   r.off();
+});
+
+// ── fix/known-limits ───────────────────────────────────────────────────────
+
+test("option 2 inside the hold: allow now, and a rule for EXACTLY that command in this session — said, shown, forgettable", async () => {
+  const seen = [];
+  const r = rig({ onRule: (slot, ev) => seen.push(ev) });
+  r.tick();
+  r.append(23);
+  const held = r.dialogs.answerHook(r.slot, payloadFor("touch c0.txt && echo done"), fakeHold());
+  assert.deepEqual(await r.asked[0].answer(2), { ok: true });
+  assert.deepEqual(await held, { behavior: "allow" }, "the hook can only allow; the rule is the plugin's");
+  assert.deepEqual(seen.map((e) => e.type), ["added"]);
+  assert.equal(seen[0].rule.command, "touch c0.txt && echo done");
+  assert.deepEqual(r.dialogs.rules(r.slot).map((x) => x.command), ["touch c0.txt && echo done"]);
+
+  // the same command line again: answered by the rule, no box
+  assert.deepEqual(r.dialogs.ruleFor(r.slot, payloadFor("touch c0.txt && echo done")), { behavior: "allow" });
+  assert.equal(r.asked.length, 1, "no second box");
+  assert.deepEqual(seen.map((e) => e.type), ["added", "used"]);
+  assert.equal(seen[1].rule.uses, 1);
+
+  // anything else is NOT covered: another file, a longer line, a different tool with the same text
+  for (const p of [payloadFor("touch c1.txt && echo done"), payloadFor("touch c0.txt && echo done; rm -rf x"), payloadFor("touch c0.txt"),
+    { ...SAMPLE, toolName: "write", toolInput: { command: "touch c0.txt && echo done" } }]) {
+    assert.equal(r.dialogs.ruleFor(r.slot, p), null, JSON.stringify(p.toolInput));
+  }
+
+  // another session's slot does not see it
+  const other = r.router.slotFor({ id: "wp-2", cwd: "/tmp/x", backendSessionId: "6e03459d-26fb-403f-af12-446f7888dd19" });
+  assert.equal(r.dialogs.ruleFor(other, payloadFor("touch c0.txt && echo done")), null);
+
+  assert.equal(r.dialogs.clearRules(r.slot), 1);
+  assert.equal(seen.at(-1).type, "cleared");
+  assert.equal(r.dialogs.ruleFor(r.slot, payloadFor("touch c0.txt && echo done")), null, "forgotten: Copilot asks again");
+  r.off();
+});
+
+test("option 2 at the terminal is Copilot's own rule: the digit, and no plugin rule", async () => {
+  const seen = [];
+  const r = rig({ onRule: (s, e) => seen.push(e) });
+  r.tick();
+  r.append(62);
+  const hold = fakeHold();
+  r.dialogs.answerHook(r.slot, payloadFor("touch c1.txt && echo done"), hold);
+  hold._expire();
+  r.append(73);
+  assert.deepEqual(await r.asked[0].answer(2), { keys: "2" });
+  assert.deepEqual(seen, []);
+  r.off();
+});
+
+test("a shell dialog without Copilot's row 2 (canOfferSessionApproval false) offers Yes / No only — a 2 would open No's text field", async () => {
+  const r = rig();
+  r.tick();
+  const req = ev(73);
+  req.data.promptRequest = { ...req.data.promptRequest, canOfferSessionApproval: false };
+  r.append(61, 62, 72, req);
+  r.tick();
+  assert.deepEqual(r.asked[0].options.map((o) => o.index), [1, 3]);
+  assert.match((await r.asked[0].answer(2)).reason, /not one of this dialog's options/);
+  assert.deepEqual(await r.asked[0].answer(3), { keys: "\x1b" });
+  r.off();
+});
+
+/** A non-shell request as Copilot 1.0.91 writes it (schema `PermissionPromptRequestWrite`). */
+const WRITE_START = { type: "tool.execution_start", data: { toolCallId: "call_W1", toolName: "create", arguments: { path: "/tmp/wp0-copilot/repo/hello.txt", file_text: "hi" } }, timestamp: "2026-10-02T10:00:00.000Z" };
+const writeRequested = (extra = {}) => ({ type: "permission.requested", timestamp: "2026-10-02T10:00:08.000Z", data: {
+  requestId: "req-w1",
+  permissionRequest: { kind: "write", toolCallId: "call_W1", intention: "Create file", fileName: "/tmp/wp0-copilot/repo/hello.txt", diff: "+hi", canOfferSessionApproval: true },
+  promptRequest: { kind: "write", toolCallId: "call_W1", intention: "Create file", fileName: "/tmp/wp0-copilot/repo/hello.txt", diff: "+hi", canOfferSessionApproval: true, ...extra },
+  agentMode: "interactive", permissionMode: "manual" } });
+const writeCompleted = { type: "permission.completed", timestamp: "2026-10-02T10:00:09.000Z", data: { requestId: "req-w1", toolCallId: "call_W1", result: { kind: "approved" }, decisionSource: "human_response" } };
+
+test("a non-shell tool past the hold: published in Copilot's words, Yes = 1, No = Esc", async () => {
+  const r = rig();
+  r.tick();
+  r.append(WRITE_START);
+  const hold = fakeHold();
+  r.dialogs.answerHook(r.slot, { ...SAMPLE, toolName: "create", toolInput: { path: "/tmp/wp0-copilot/repo/hello.txt", file_text: "hi" } }, hold);
+  assert.equal(r.asked[0].id, "call_W1", "the tool call's own id, as for a shell request");
+  hold._expire();
+  assert.match((await r.asked[0].answer(1)).reason, /not shown its dialog in the terminal yet/);
+  r.append(writeRequested());
+  r.tick();
+  const d = r.asked.at(-1);
+  assert.equal(d.id, "call_W1");
+  assert.match(d.question, /^Do you want to create \/tmp\/wp0-copilot\/repo\/hello\.txt\?/, "the terminal dialog's own question");
+  assert.deepEqual(d.options.map((o) => o.index), [1, 3]);
+  assert.deepEqual(await d.answer(1), { keys: "1" });
+  assert.deepEqual(r.typed, ["1"]);
+  r.append(writeCompleted);
+  r.tick();
+  assert.deepEqual(r.resolved, ["call_W1"]);
+  r.off();
+});
+
+test("a non-shell dialog Copilot raised with no hook (published from events.jsonl) is answered too; No is Esc", async () => {
+  const r = rig();
+  r.tick();
+  r.append(WRITE_START, writeRequested());
+  r.tick();
+  assert.equal(r.asked.length, 1);
+  assert.deepEqual(await r.asked[0].answer(3), { keys: "\x1b" });
+  r.off();
+});
+
+test("kinds the phone does not answer at the terminal (a URL, a sandbox bypass) refuse in words and type nothing", async () => {
+  const r = rig();
+  r.tick();
+  r.append({ type: "permission.requested", data: { requestId: "req-u", permissionRequest: { kind: "url", toolCallId: "call_U", intention: "Fetch", url: "https://x" }, promptRequest: { kind: "url", toolCallId: "call_U", intention: "Fetch", url: "https://x" } } });
+  r.tick();
+  assert.match((await r.asked[0].answer(1)).reason, /url dialog is not one the phone can answer/);
+  const r2 = rig();
+  r2.tick();
+  r2.append(WRITE_START, writeRequested({ requestSandboxBypass: true }));
+  r2.tick();
+  assert.match((await r2.asked[0].answer(1)).reason, /leave the sandbox/);
+  assert.deepEqual(r.typed, []);
+  assert.deepEqual(r2.typed, []);
+  r.off(); r2.off();
+});
+
+test("tuiQuestion: the write dialog's own wording per intention (1.0.91 source)", () => {
+  assert.equal(tuiQuestion({ kind: "write", intention: "Edit file", fileName: "a.ts" }), "Do you want to edit a.ts?");
+  assert.equal(tuiQuestion({ kind: "write", intention: "", fileName: "a.ts" }), "Do you want to modify a.ts?");
+  assert.equal(tuiQuestion({ kind: "write", intention: "Rename", fileName: "a.ts" }), 'Do you want to perform "Rename" on a.ts?');
+  assert.equal(tuiQuestion({ kind: "url" }), null);
 });
