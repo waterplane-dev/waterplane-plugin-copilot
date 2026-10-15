@@ -52,7 +52,8 @@ test("activate registers exactly the backend the manifest declares, and writes t
 test("the backend passes the host's own adapter (pluginDescriptor) unchanged in meaning", async (t) => {
   if (!existsSync(ADAPTER)) return t.skip(`the main repo's host is not built at ${ADAPTER}`);
   const { pluginDescriptor } = await import(pathToFileURL(ADAPTER).href);
-  const api = makeFakeApi();
+  // No binary to ask: the catalogue is the empty one, i.e. the free-text field.
+  const api = makeFakeApi({ env: { COPILOT_CLI_BIN: "/nonexistent/copilot" } });
   host.activate(api);
   const d = pluginDescriptor(api._calls.backend[0], manifest.name);
   assert.equal(d.caps.effort, true);

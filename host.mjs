@@ -22,6 +22,7 @@ import { createEndGate, createTurnSource, emitTurn, turnEdge } from "./turns.mjs
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, RULE_LABEL } from "./dialogs.mjs";
 import { copilotHome } from "./paths.mjs";
+import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
@@ -147,9 +148,9 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     },
     delivery: DELIVERY,
     caps: CAPS,
-    // No catalogue is read: the account measured has only "Auto", other plans
-    // have more, and a guessed list is worse than a free-text field.
-    models: async () => ({ aliases: [], ids: [] }),
+    // The binary's own list for this account (models.mjs, over ACP); the host
+    // asks once per boot. A failure is an empty catalogue, i.e. the free-text field.
+    models: () => readModels({ bin: resolveBin(env), home, env: SPAWN_ENV }),
     sources: {
       turns: createTurnSource(router),
       dialogs: dialogs.source,

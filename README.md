@@ -120,7 +120,7 @@ during the hold (see below).
 | A typed reason with "No" past the hold | Esc stops the turn; the reason field takes free text the host's bounded keys cannot type safely — answer at the terminal, or prompt after |
 | Terminal dialogs for URL / path / sandbox-bypass requests | not answered from the phone (refused in words); MCP, memory and extension-tool dialogs are answered from the 1.0.91 source's shape, not measured |
 | A turn aborted while nobody watches | its end comes from the `abort` line, which is read while a phone watches the session; otherwise the host's own fallback ends it |
-| Model list | none on purpose: the account measured offers only Auto; other plans offer more, and a guessed list is worse than a free-text field |
+| Model list | the binary's own, per account: `copilot --acp --stdio` → `session/new` → `models.availableModels` (models.mjs), asked once per host boot; the throwaway session is closed and its dir removed. `auto` is an alias, every id hosted. Any failure ⇒ empty ⇒ the free-text field |
 | `--no-remote` | exists on 1.0.91 but not passed: remote control is off by default (`remoteSteerable: false`) and no config key turns it on |
 | `--effort`, `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised |
 
