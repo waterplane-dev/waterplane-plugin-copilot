@@ -16,7 +16,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { sessionDir, SESSION_ID_RE } from "./paths.mjs";
 
-export const MODELS_TIMEOUT_MS = 20_000;
+// Generous on purpose: the host asks while it boots, and its event loop was
+// measured busy ~24 s then — the reply had arrived but went unread past a 20 s clock.
+export const MODELS_TIMEOUT_MS = 90_000;
 
 /** The id Copilot uses for "let Copilot pick" — an alias, not a model. */
 export const AUTO_ID = "auto";
@@ -88,6 +90,7 @@ export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS,
         let m;
         try { m = JSON.parse(line); } catch { continue; }
         if (m.id === 1) {
+          if (done) return; // timed out: open no session nobody will close
           if (m.error) { finish(empty); return; }
           send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: tmpdir(), mcpServers: [] } });
         } else if (m.id === 2) {
