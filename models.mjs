@@ -23,6 +23,9 @@ export const MODELS_TIMEOUT_MS = 90_000;
 /** The id Copilot uses for "let Copilot pick" — an alias, not a model. */
 export const AUTO_ID = "auto";
 
+/** Said under the picker when Copilot offers nothing but Auto. */
+export const ONLY_AUTO_NOTE = "Copilot lists only Auto for this account: it picks the model itself. Other models show here once your Copilot plan offers them.";
+
 /**
  * `session/new`'s result → the backend's catalogue. Pure. Ids are deduplicated
  * (1.0.91 lists "auto" three times), `auto` is an alias, every real id is
@@ -39,6 +42,10 @@ export function catalogueOf(result) {
   const aliases = seen.has(AUTO_ID) ? [AUTO_ID] : [];
   const ids = [...seen].filter((id) => id !== AUTO_ID);
   const where = Object.fromEntries([...seen].map((id) => [id, "hosted"]));
+  // Measured on 1.0.91 (2026-10-15): an account whose plan offers no model to
+  // pick lists ONLY "auto", and `--model claude-sonnet-4.6` then fails with
+  // "is not available". The picker says so instead of looking broken.
+  if (aliases.length && !ids.length) return { aliases, ids, where, note: ONLY_AUTO_NOTE };
   return { aliases, ids, where };
 }
 

@@ -7,16 +7,17 @@ import assert from "node:assert/strict";
 import { mkdirSync, existsSync, mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { catalogueOf, readModels } from "../models.mjs";
+import { catalogueOf, readModels, ONLY_AUTO_NOTE } from "../models.mjs";
 
 test("catalogueOf: 1.0.91's triple Auto is one alias, real ids are hosted", () => {
   const auto = { modelId: "auto", name: "Auto" };
   assert.deepEqual(catalogueOf({ models: { availableModels: [auto, auto, auto] } }),
-    { aliases: ["auto"], ids: [], where: { auto: "hosted" } });
+    { aliases: ["auto"], ids: [], where: { auto: "hosted" }, note: ONLY_AUTO_NOTE });
   const c = catalogueOf({ models: { availableModels: [auto, { modelId: "gpt-5.4" }, { modelId: "claude-sonnet-4.6" }, { modelId: "gpt-5.4" }] } });
   assert.deepEqual(c.aliases, ["auto"]);
   assert.deepEqual(c.ids, ["gpt-5.4", "claude-sonnet-4.6"]);
   assert.equal(c.where["gpt-5.4"], "hosted");
+  assert.equal(c.note, undefined, "a real list carries no only-Auto note");
 });
 
 test("catalogueOf: no list, a newer shape, junk entries ⇒ empty, never a guess", () => {
