@@ -70,6 +70,9 @@ import { eventsPath } from "./paths.mjs";
 export const DIALOG_KEYS = Object.freeze({ 1: "1", 2: "2", 3: "\x1b" });
 
 /** The `promptRequest.kind`s whose terminal dialog is that Yes … / No list (1.0.91 source). */
+/** The tool behind Copilot's free-text question form (1.0.91: `ask_user`, `notification{elicitation_dialog}`). */
+export const ASK_TOOL = "ask_user";
+
 export const TUI_KINDS = new Set(["commands", "write", "mcp", "memory", "custom-tool"]);
 
 /** How often a watched session's events.jsonl is read for new lines. */
@@ -201,7 +204,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [] });
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], asks: new Set(), told: 0 });
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
   const publish = (slot, r) => emit(slot, (w) => w.asked(r.dialog));
@@ -277,6 +280,21 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     publish(slot, r); // same id; option 2 loses its allow-once note
   }
 
+  /**
+   * Copilot's `ask_user` form (its `notification{elicitation_dialog}`): a question the phone
+   * cannot pose — free text, answered at the terminal — but the session is blocked on it all
+   * the same. Its count is reported as `unposed`, which the host shows as waiting on you.
+   * Open from its `tool.execution_start`, closed by its `tool.execution_complete`, an abort or
+   * a session (re)start.
+   */
+  function tellAsks(slot) {
+    const s = st(slot);
+    const n = s.asks.size;
+    if (n === s.told) return;
+    s.told = n;
+    emit(slot, (w) => w.unposed?.(n));
+  }
+
   const findOpen = (slot, pred) => { for (const r of st(slot).open.values()) if (pred(r)) return r; return null; };
 
   // ── events.jsonl ────────────────────────────────────────────────────────
@@ -329,6 +347,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         return;
       }
       case "tool.execution_start": {
+        if (d.toolName === ASK_TOOL && str(d.toolCallId)) { s.asks.add(d.toolCallId); tellAsks(slot); return; }
         // A box published under a minted id learns its tool call late (the id it was shown under stays).
         const tcid = str(d.toolCallId), cmd = str(d.arguments?.command);
         if (!tcid || !cmd) return;
@@ -338,11 +357,13 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       }
       case "tool.execution_complete": {
         const tcid = str(d.toolCallId);
+        if (tcid && s.asks.delete(tcid)) tellAsks(slot);
         const r = tcid ? findOpen(slot, (x) => x.toolCallId === tcid) : null;
         if (r && r.phase !== "hook") drop(r);
         return;
       }
       case "abort": {
+        if (s.asks.size) { s.asks.clear(); tellAsks(slot); }
         // Esc at a dialog (or in the composer) aborts the turn, and Copilot then fires NO agentStop
         // (measured: permission.completed "cancelled", assistant.turn_end, abort, usage_checkpoint).
         if (!quiet) { const at = Date.parse(e.timestamp); try { onAbort(slot, Number.isFinite(at) ? at : now()); } catch { /* the host's fault */ } }
@@ -351,6 +372,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       case "session.shutdown": case "session.start": case "session.resume":
         // Copilot exited or (re)started: nothing asked before is still on its screen.
         for (const r of [...s.open.values()]) if (r.phase !== "hook") drop(r);
+        if (s.asks.size) { s.asks.clear(); tellAsks(slot); }
         return;
       default:
     }
@@ -464,6 +486,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   /** Copilot's session ended (`sessionEnd`): every dialog is gone with it. A held hook is left to the core's expiry. */
   function retireAll(slot) {
     for (const r of [...st(slot).open.values()]) retire(slot, r);
+    if (st(slot).asks.size) { st(slot).asks.clear(); tellAsks(slot); }
   }
 
   /** Something says the terminal moved (the `notification{permission_prompt}` hook): read now, not at the next tick. */
@@ -474,6 +497,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       const slot = router.slotFor(ss);
       slot.dialogs.add(on);
       const s = st(slot);
+      if (s.asks.size) { try { on.unposed?.(s.asks.size); } catch { /* the host's fault */ } }
       if (!s.timer) {
         s.timer = setInterval(() => { try { readTail(slot); } catch { /* next tick */ } }, pollMs);
         s.timer.unref?.();

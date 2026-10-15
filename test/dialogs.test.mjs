@@ -416,3 +416,28 @@ test("tuiQuestion: the write dialog's own wording per intention (1.0.91 source)"
   assert.equal(tuiQuestion({ kind: "write", intention: "Rename", fileName: "a.ts" }), 'Do you want to perform "Rename" on a.ts?');
   assert.equal(tuiQuestion({ kind: "url" }), null);
 });
+
+test("ask_user: the open form is reported as unposed (the host's 'waiting on you'), closed by its completion or an abort", () => {
+  const r = rig();
+  r.tick();
+  const counts = [];
+  const off = r.dialogs.source.watch(r.ss, { asked: () => {}, resolved: () => {}, unposed: (n) => counts.push(n) });
+  // Shape measured on a live 1.0.91 session (events.jsonl, 2026-10-15): the form is a tool call.
+  const start = (id) => ({ type: "tool.execution_start", timestamp: "2026-10-15T18:24:00.000Z", data: { toolCallId: id, toolName: "ask_user", arguments: { message: "Which browser?", requestedSchema: { properties: { b: { type: "string" } } } } } });
+  r.append(start("call_ask1"));
+  r.tick();
+  assert.deepEqual(counts, [1], "the form is open: blocked on you");
+  assert.equal(r.asked.length, 0, "never posed as a box — nothing to tap");
+  r.append({ type: "tool.execution_complete", timestamp: "2026-10-15T18:25:00.000Z", data: { toolCallId: "call_ask1", success: true } });
+  r.tick();
+  assert.deepEqual(counts, [1, 0], "answered at the terminal: no longer waiting");
+  r.append(start("call_ask2"), { type: "abort", timestamp: "2026-10-15T18:26:00.000Z", data: { reason: "user initiated" } });
+  r.tick();
+  assert.deepEqual(counts, [1, 0, 1, 0], "Esc at the form aborts the turn, and the wait with it");
+  r.append(start("call_ask3"));
+  r.tick();
+  const late = [];
+  const off2 = r.dialogs.source.watch(r.ss, { asked: () => {}, resolved: () => {}, unposed: (n) => late.push(n) });
+  assert.deepEqual(late, [1], "a watcher that attaches while the form is open is told at once");
+  off(); off2(); r.off();
+});
