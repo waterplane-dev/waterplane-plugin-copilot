@@ -23,7 +23,7 @@ import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "
 import { hookTimeoutSec, parseHookPost, writePluginDir } from "./hooks.mjs";
 import { DELIVERY } from "./delivery.mjs";
 import { createSlots } from "./slots.mjs";
-import { createEndGate, createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
+import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, RULE_LABEL } from "./dialogs.mjs";
 import { copilotHome } from "./paths.mjs";
@@ -122,7 +122,7 @@ export function showRules(api, slot) {
 }
 
 /** The `onHook` handler. Exported for tests. */
-export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, endGate = null, ruleAllows = null }) {
+export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, ruleAllows = null }) {
   return (body, hold) => {
     const msg = parseHookPost(body);
     if (!msg) return {};
@@ -136,7 +136,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
     // turn it is not passed on.
     if (e?.edge === "started") slot.state.inTurn = true;
     else if (e?.edge === "ended") slot.state.inTurn = false;
-    if (e && !(e.edge === "ready" && slot.state.inTurn)) { if (endGate) endGate.edge(slot, e); else emitTurn(slot, e); }
+    if (e && !(e.edge === "ready" && slot.state.inTurn)) emitTurn(slot, e);
     if (msg.hook === "permissionRequest") {
       // A rule a PERSON made with option 2 during an earlier hold: exactly this command, this
       // session — kept and judged by the host's answer gate, never here. Asked before the "is
@@ -149,7 +149,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
       if (!attended(slot)) return {};
       return dialogs.answerHook(slot, msg.payload, hold);
     }
-    if (msg.hook === "sessionEnd") { slot.state.inTurn = false; endGate?.flush(slot); dialogs.retireAll(slot); }
+    if (msg.hook === "sessionEnd") { slot.state.inTurn = false; dialogs.retireAll(slot); }
     else if (msg.hook === "notification") dialogs.poke(slot); // permission_prompt: the TUI dialog is up
     return {};
   };
@@ -214,16 +214,13 @@ export function activate(api) {
     router, home: () => copilotHome((k) => api.env(k)), rulesSupported: rulesOn,
     keysThenTyped: () => supportsKeysThenTyped(api), screen: (sid) => api.screen(sid),
     onAnswered: (slot, a) => { if (a.choice === 2 && a.phase === "hook") setImmediate(() => showRules(api, slot)); },
-    onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; endGate.edge(slot, { edge: "ended", at }); },
+    onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; emitTurn(slot, { edge: "ended", at }); },
   });
   const context = createContextSource({
     otelDir: join(api.dataDir, "otel"), home: () => copilotHome((k) => api.env(k)),
     idOf: (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined,
     tail: (p, on, o) => api.tail(p, on, o),
   });
-  // The turn's end waits (≤ END_WAIT_MS) for its usage checkpoint, so the host's turn-end
-  // context read is this turn's prompt, not the last one's.
-  const endGate = createEndGate({ ready: (slot, at) => !slot.id || context.checkpointSince(slot.id, at) });
   // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may
   // answer for the plugin. Unknown session (null) keeps the hold: cannot say is not "nobody".
   const attended = (slot) => { const s = api.session?.(slot.hostId); return !s || s.watched === true || s.mayAnswer === true; };
@@ -237,7 +234,7 @@ export function activate(api) {
     showRules(api, slot);
     return { behavior: "allow" };
   } : null;
-  const handler = makeHookHandler({ router, dialogs, attended, endGate, ruleAllows });
+  const handler = makeHookHandler({ router, dialogs, attended, ruleAllows });
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);

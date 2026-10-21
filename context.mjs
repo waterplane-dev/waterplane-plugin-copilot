@@ -16,10 +16,7 @@
  *      newer (a call after the last checkpoint, or no checkpoint at all).
  *
  *   createContextSource({ otelDir, home, idOf?, tail })
- *     → { sample(ss), checkpointSince(id, ms) }
- *
- * `checkpointSince` is what the turn-end gate (turns.mjs) waits on, so the
- * host's turn-end context read sees THIS turn's checkpoint, not the last one.
+ *     → { sample(ss) }
  *
  * The WINDOW is not this source's to say: Copilot shows it only on `/context`
  * and `session.usage_info` is ephemeral, so the host keeps it absent. Nothing
@@ -88,12 +85,6 @@ export function createContextSource({ otelDir, home, idOf, tail } = {}) {
       const fromCp = cp ? { at: cp.at, usedTok: cp.usedTok, ...(cp.model ? { model: cp.model } : {}) } : null;
       if (fromSpan && fromCp) return fromSpan.at > fromCp.at ? fromSpan : fromCp;
       return fromCp ?? fromSpan;
-    },
-    /** Has a checkpoint written at or after `ms` (a turn's agentStop) reached events.jsonl? */
-    checkpointSince(id, ms) {
-      if (typeof id !== "string" || !SESSION_ID_RE.test(id)) return false;
-      const c = checkpoint(id.toLowerCase());
-      return !!c && c.lastTs >= ms;
     },
   };
 }

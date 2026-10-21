@@ -102,9 +102,8 @@ test("hooks posted to the sink become turn edges and channel health on the right
   assert.ok(held instanceof Promise, "a permission request is HELD for a tap");
   hold._expire(); // the core answers {} itself; the promise is left to it
   post("agentStop");
-  assert.deepEqual(edges, ["started"], "sessionStart's ready is not passed on inside a turn; the end waits for its checkpoint");
+  assert.deepEqual(edges, ["started", "ended"], "sessionStart's ready is not passed on inside a turn; agentStop ends it at once (the host waits for the fresh context sample)");
   post("sessionEnd");
-  assert.deepEqual(edges, ["started", "ended"], "…and sessionEnd releases it at once");
   assert.equal(handle.health().state, "down");
   assert.deepEqual(api._hook.fn({ hook: "agentStop", payload: { ...sample("agentStop"), sessionId: "6e03459d-0000-4000-8000-000000000000" } }, fakeHold()), {}, "not ours: {} and nothing else");
   assert.deepEqual(api._hook.fn({ nonsense: true }, fakeHold()), {});

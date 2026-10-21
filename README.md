@@ -11,8 +11,8 @@ that it is not. MIT licensed.
 
 ## Plugin contract
 
-Written for waterplane plugin contract **2.0** (`"apiVersion": "2.0"`), tested against the main repo at
-commit `1ef834a7` (`node --test`, and `scripts/e2e-host.mjs` against its build); both are also in
+Written for waterplane plugin contract **2.1** (`"apiVersion": "2.1"`), tested against the main repo at
+commit `ee21844c` (`node --test`, and `scripts/e2e-host.mjs` against its build); both are also in
 `package.json` under `"waterplane"`. It uses the host's 2.0 toolkit instead of its own copies:
 `api.bindConversation` (which conversation a `--continue` launch is — `slots.mjs`), `api.tail` (every
 JSONL log — `jsonl.mjs`), `api.screen` (the `ask_user` form's highlight, for the key walk that is
@@ -37,9 +37,9 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | limits | `limit.ts` | absent | no stated CLI wall signal measured |
 | agents, conversations, fork | store | absent | no measured list; no fork flag (S5) |
 
-Two host gaps keep plugin code alive: the turn-end gate in `turns.mjs` (the host reads the context
-sample once at the end edge, with no bounded wait for one whose `at` is at or after it), and the
-keys-then-words dialog answer above.
+One host gap keeps plugin code alive: the keys-then-words dialog answer above. (The turn-end gate is
+gone: since 2.1 the host itself waits up to 1.5 s at the end edge for a context sample whose `at` is at
+or after it.)
 
 ## Install
 
@@ -87,9 +87,9 @@ during the hold (see below).
   prompt; `assistant.turn_end` is per model step and is not used). `sessionStart` fires lazily,
   right after the FIRST prompt's `userPromptSubmitted`, so its `ready` is not passed on inside a
   turn (it used to end the first turn early, and that turn's real end then counted for nothing).
-  The end edge waits for the turn's `session.usage_checkpoint` (written 1–6 ms after `agentStop`
-  returns, measured; at most `END_WAIT_MS` = 1.5 s) so the host's turn-end context read is this
-  turn's. The session reads as *hooked*
+  The end edge is emitted at once; the HOST then waits (up to 1.5 s, since usmc `aa0e0668`) for a
+  context sample at or after it, and the turn's `session.usage_checkpoint` lands 1–6 ms after
+  `agentStop` returns (measured), so its turn-end context read is this turn's. The session reads as *hooked*
   as soon as Copilot holds its session lock (`session-state/<id>/inuse.<pid>.lock`), before any
   prompt — `sessionStart` only fires after the first one.
 - **Delivery.** Copilot's composer is a `❯` row between two full-width `─` rules, the same shape the
