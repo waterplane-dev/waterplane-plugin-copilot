@@ -39,7 +39,8 @@ const STEPS = {
   S4: { name: "plan + effort", credits: "0", spends: false, about: "session.start / checkpoint echo plan + reasoningEffort; /plan exists?" },
   S5: { name: "fork", credits: "0", spends: false, about: "any --fork / copy-on-resume flag (help text only)" },
 };
-const MODEL = "gpt-4.1";
+// This account offers only Auto, so no --model is passed unless --model <id> is given.
+const MODEL = (() => { const i = process.argv.indexOf("--model"); return i >= 0 ? process.argv[i + 1] : null; })();
 
 // ---- args -----------------------------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -109,7 +110,7 @@ try {
 function launchTui(args, { pluginDir, label }) {
   const home = mkTemp(`home-${label}`), cwd = mkTemp(`cwd-${label}`);
   const sessionId = crypto.randomUUID();
-  const full = [`--session-id=${sessionId}`, "--model", MODEL, ...(pluginDir ? ["--plugin-dir", pluginDir] : []), ...args];
+  const full = [`--session-id=${sessionId}`, ...(MODEL ? ["--model", MODEL] : []), ...(pluginDir ? ["--plugin-dir", pluginDir] : []), ...args];
   const term = new XTerm({ cols: 120, rows: 40, allowProposedApi: true });
   const p = ptyLib.spawn(BIN, full, { name: "xterm-256color", cols: 120, rows: 40, cwd, env: childEnv(home) });
   let raw = "";
@@ -125,7 +126,8 @@ function launchTui(args, { pluginDir, label }) {
 }
 
 /** Waits for the composer, i.e. the TUI has finished booting (a prompt glyph or the model line). */
-const booted = (t) => t.until(() => /[❯›>]\s*(Type|Enter|\s*$)|Type @|for shortcuts|\/help/i.test(t.screen()), 45000);
+// Answers "Confirm folder trust" with 1 (session-only; never "remember") and waits for the composer.
+const booted = (t) => { let trusted = 0; return t.until(() => { const s = t.screen(); if (/Confirm folder trust/i.test(s)) { if (Date.now() - trusted > 3000) { t.write("1"); trusted = Date.now(); } return false; } return /[❯›>]\s*(Type|Enter|\s*$)|Type @|for shortcuts|\/help/i.test(s); }, 60000); };
 const needTui = () => (ptyLib ? null : ptyWhy);
 const needToken = () => (TOKEN ? null : "no signed-in Copilot account in ~/.copilot/config.json (read-only) — sign in once with `copilot`, then `/login`");
 const binOk = () => { try { execFileSync(BIN, ["--version"], { stdio: "pipe", timeout: 15000, env: childEnv(mkTemp("home-ver")) }); return null; } catch (e) { return `cannot run \`${BIN} --version\`: ${e.code ?? e.message}`; } };
@@ -165,6 +167,14 @@ async function s0() {
   } finally { try { child.stdin.end(); child.kill(); } catch { /* gone */ } }
   const raw = saveRaw("s0-acp.json", { init, ses, stderr: errBuf.slice(0, 2000) });
   const list = ses?.result?.models?.availableModels;
+  if (!Array.isArray(list) && ses?.result && !ses.error) {
+    const r = ses.result;
+    return rowOf("S0", true, {
+      carriesContextSize: false, contextWindow: "absent: session/new has no models key",
+      resultKeys: Object.keys(r), configOptions: r.configOptions ?? null, modes: r.modes ?? null,
+      note: "no model list or window in session/new; plan/agent/autopilot are ACP session modes, see configOptions/modes",
+    }, { raw });
+  }
   if (!Array.isArray(list)) return absent("S0", `ACP session/new returned no models.availableModels (${init?.error ? "initialize error" : ses ? "no list in result" : "no reply within 60 s"})`, raw);
   const SIZE_RE = /context|window|limit|token|max.?input|max.?output|size/i;
   const sizeKeys = new Set();
