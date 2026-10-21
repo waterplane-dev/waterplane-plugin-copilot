@@ -6,7 +6,7 @@
 //   node scripts/spike-v2.mjs --step S2             # one step (repeat, or comma-separate: --step S1,S4)
 //   node scripts/spike-v2.mjs --spend --step S3     # steps that spend premium requests need --spend
 //
-// Steps and cost (premium requests; every launch is `--model gpt-4.1`, 0 on the owner's plan, 2026-10-01):
+// Steps and cost (premium requests; no --model passed: this account has only Auto; --model <id> optional):
 //   S0 window        0   ACP session/new: does availableModels[] carry a context size?
 //   S1 instructions  0   does a --plugin-dir with skills/instructions files get LOADED? (TUI, no prompt)
 //   S2 ask rules     0   --allow-tool/--deny-tool accepted by the parser? any ask-shaped flag? (parser only)
@@ -51,7 +51,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
   for (const [k, s] of Object.entries(STEPS)) {
     console.log(`  ${k.padEnd(4)} ${s.name.padEnd(14)} credits: ${s.credits.padEnd(4)} ${s.spends ? "[needs --spend] " : ""}${s.about}`);
   }
-  console.log("\nNo --step: every zero-credit step. Spending steps (S3, S3b) require --spend and use gpt-4.1.");
+  console.log("\nNo --step: every zero-credit step. Spending steps (S3, S3b) require --spend (no --model unless given).");
   console.log("Isolated COPILOT_HOME + temp cwd; nothing written to ~/.copilot or any repo. Report: <out>/report.json.");
   console.log("Env: MAIN_REPO (usmc checkout holding node-pty and @xterm/headless; default ~/dev/usmc), COPILOT_CLI_BIN.");
   process.exit(0);
