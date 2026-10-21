@@ -127,7 +127,7 @@ function launchTui(args, { pluginDir, label }) {
 
 /** Waits for the composer, i.e. the TUI has finished booting (a prompt glyph or the model line). */
 // Answers "Confirm folder trust" with 1 (session-only; never "remember") and waits for the composer.
-const booted = (t) => { let trusted = 0; return t.until(() => { const s = t.screen(); if (/Confirm folder trust/i.test(s)) { if (Date.now() - trusted > 3000) { t.write("1"); trusted = Date.now(); } return false; } return /[❯›>]\s*(Type|Enter|\s*$)|Type @|for shortcuts|\/help/i.test(s); }, 60000); };
+const booted = (t) => { let trusted = 0; return t.until(() => { const s = t.screen(); if (/Confirm folder trust/i.test(s)) { if (Date.now() - trusted > 3000) { t.write("1"); trusted = Date.now(); } return false; } return /[❯›>]\s*(Type|Enter|\s*$)|Type @|for shortcuts|\/help|\/ commands/im.test(s); }, 60000); };
 const needTui = () => (ptyLib ? null : ptyWhy);
 const needToken = () => (TOKEN ? null : "no signed-in Copilot account in ~/.copilot/config.json (read-only) — sign in once with `copilot`, then `/login`");
 const binOk = () => { try { execFileSync(BIN, ["--version"], { stdio: "pipe", timeout: 15000, env: childEnv(mkTemp("home-ver")) }); return null; } catch (e) { return `cannot run \`${BIN} --version\`: ${e.code ?? e.message}`; } };
@@ -209,7 +209,7 @@ async function s1() {
   const t = launchTui([], { pluginDir: plug, label: "s1" });
   const shots = {};
   try {
-    if (!(await booted(t))) return absent("S1", "the TUI never showed a composer within 45 s", saveRaw("s1-screen.txt", t.screen() || t.raw().slice(-3000)));
+    if (!(await booted(t))) return absent("S1", "the TUI never showed a composer within 60 s", saveRaw("s1-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1500);
     shots.boot = t.screen();
     const help = (async () => { t.write("/help\r"); await sleep(2500); const s = t.screen(); t.write("\x1b"); await sleep(500); return s; });
@@ -267,7 +267,7 @@ async function s4() {
   if (why) return absent("S4", why);
   const t = launchTui(["--plan", "--effort", "high"], { label: "s4" });
   try {
-    if (!(await booted(t))) return absent("S4", "the TUI never showed a composer within 45 s", saveRaw("s4-screen.txt", t.screen() || t.raw().slice(-3000)));
+    if (!(await booted(t))) return absent("S4", "the TUI never showed a composer within 60 s", saveRaw("s4-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1500);
     const bootScreen = t.screen();
     t.write("/help\r"); await sleep(2500);
@@ -311,7 +311,7 @@ async function s3() {
   if (why) return absent("S3", why);
   const t = launchTui([], { label: "s3" });
   try {
-    if (!(await booted(t))) return absent("S3", "the TUI never showed a composer within 45 s", saveRaw("s3-screen.txt", t.screen() || t.raw().slice(-3000)));
+    if (!(await booted(t))) return absent("S3", "the TUI never showed a composer within 60 s", saveRaw("s3-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1000);
     t.write("Use ask_user to ask me which colour I prefer, then say it back.\r");
     const askRe = /ask_user|elicitation/i;
@@ -335,7 +335,7 @@ async function s3b() {
   if (why) return absent("S3b", why);
   const t = launchTui([], { label: "s3b" });
   try {
-    if (!(await booted(t))) return absent("S3b", "the TUI never showed a composer within 45 s", saveRaw("s3b-screen.txt", t.screen() || t.raw().slice(-3000)));
+    if (!(await booted(t))) return absent("S3b", "the TUI never showed a composer within 60 s", saveRaw("s3b-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1000);
     t.write("Run the shell command: touch spike-s3b.txt\r");
     // no hook plugin => no phone hold: the TUI's own permission dialog is "past the hold" from the start
