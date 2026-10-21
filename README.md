@@ -9,6 +9,13 @@ Everything here is measured against **Copilot CLI 1.0.91** (the main repo's
 `docs/analysis/spikes/2026-10-01-copilot-1.0.91.md`, fixtures copied to `test/fixtures/`), or says
 that it is not. MIT licensed.
 
+## Plugin contract
+
+Written for waterplane plugin contract **2.0** (`"apiVersion": "2.0"`), tested against the main repo at
+commit `3943f989` (tag `plugin-api-2.0.0`); both are also in `package.json` under `"waterplane"`. This is
+the minimal bridge port from 1.x (`prepare()` for `launchArgs()`, `facts` + binary `caps`,
+`measured`); behaviour is unchanged.
+
 ## Install
 
 Installer: `install.sh --with copilot` does steps 2 and 3. By hand:

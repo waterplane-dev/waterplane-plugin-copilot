@@ -70,6 +70,7 @@ const env = {
   COPILOT_HOME: HOME,
 };
 const host = spawn(process.execPath, [MAIN_JS], { cwd: MAIN, env, stdio: ["ignore", "pipe", "pipe"] });
+const RUN = `r${Date.now().toString(36)}-`;
 let hostLog = "";
 host.stdout.on("data", (d) => { hostLog += d; });
 host.stderr.on("data", (d) => { hostLog += d; });
@@ -105,6 +106,7 @@ try {
   const endCtx = new Map(); // session → the context fills published since its last turn ended, in order
   ws.on("message", (raw) => {
     const m = JSON.parse(raw.toString());
+    if (typeof m.ackId === "string" && m.ackId.startsWith(RUN)) m.ackId = m.ackId.slice(RUN.length);
     if (m.t === "backends") backends = m.list;
     if (m.t === "plugin.list") plugins = m.plugins;
     if (m.t === "session.created") { created.push(m.session); sessions.set(m.session.id, m.session); }
@@ -120,7 +122,9 @@ try {
     if (m.t === "input.ack") inputs.set(m.ackId, m);
   });
   await new Promise((r) => ws.on("open", r));
-  const send = (m) => ws.send(JSON.stringify(m));
+  // The host keeps a durable ledger of ackIds in its state dir, which is the user's own: a fixed
+  // ackId from an earlier run is answered from the ledger and nothing runs. A run-unique prefix.
+  const send = (m) => ws.send(JSON.stringify(typeof m.ackId === "string" ? { ...m, ackId: RUN + m.ackId } : m));
   send({ t: "hello", protocol: 1 });
 
   const plug = () => plugins?.find((p) => p.manifest.id === "copilot");
@@ -164,7 +168,7 @@ try {
   await until(() => { void getJson("/api/tokenstats/copilot?fresh=1").then((l) => { ledger = l; }); return ledger.totals?.kinds?.input > 0; }, 8000);
   check(ledger.available === true && ledger.unit?.name === "AI credits" && Math.abs(Object.values(ledger.unit.perDay).reduce((a, b) => a + b, 0) - 0.1) < 1e-6,
     `GET /api/tokenstats/copilot has the AI credits in their own unit (${JSON.stringify(ledger.unit)})`);
-  check(ledger.totals?.kinds?.input > 0 && ledger.totals.kinds.output > 0 && ledger.models?.length === 1, `…and the tokens per model beside them (${JSON.stringify(ledger.totals?.kinds)})`);
+  check(ledger.totals?.kinds?.input > 0 && ledger.totals.kinds.output > 0 && ledger.models?.length === 1, `…and the tokens per model beside them (${JSON.stringify(ledger.totals?.kinds)} models=${JSON.stringify(ledger.models)})`);
   check(await until(() => cur()?.contextUsedTok > 0, 8000) && cur()?.contextTotalTok === undefined,
     `the context fill is the last chat span's input, with no window (used=${cur()?.contextUsedTok} total=${cur()?.contextTotalTok})`);
 

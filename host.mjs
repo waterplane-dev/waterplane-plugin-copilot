@@ -13,8 +13,10 @@
  *
  * Every number and literal here is measured on Copilot 1.0.91 or says it is not.
  */
+import { execFile } from "node:child_process";
 import { join } from "node:path";
-import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
+import { promisify } from "node:util";
+import { binFound, buildLaunch, EFFORT_LADDER, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
 import { hookTimeoutSec, parseHookPost, writePluginDir } from "./hooks.mjs";
 import { DELIVERY } from "./delivery.mjs";
 import { createRouter } from "./router.mjs";
@@ -27,6 +29,15 @@ import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
 
+const execFileP = promisify(execFile);
+
+/**
+ * `settledPlan` of the contract (`@waterplane/shared`), spelled locally: a plugin repo has no
+ * node_modules to import it from, and the marker is the registered symbol `pluginapi.settledPlan`.
+ * TRANSITIONAL: gone when the host awaits `prepare` (a plugin then returns any promise).
+ */
+export const settledPlan = (plan) => Object.assign(Promise.resolve(plan), { [Symbol.for("pluginapi.settledPlan")]: plan });
+
 export const BACKEND_ID = "copilot";
 export const HOLD_DEFAULT_MS = 8000;
 
@@ -37,35 +48,42 @@ export function holdMsOf(values) {
 }
 
 /**
- * The capabilities, each a statement about what Copilot HAS on 1.0.91:
- * - hooks "plugin-inject": its hooks ride `--plugin-dir` to this plugin's sink.
- * - promptBoxes false: no core SCREEN reader was measured against Copilot's
- *   numbered dialog. The phone still gets boxes: `sources.dialogs` (the held
- *   permission hook + events.jsonl) is what the wire's `promptBoxes` derives
- *   from. While the channel is down there is no box, and the phone says to
- *   answer at the terminal — never a reader written for another TUI.
- * - transcript "none": no CORE reader — the host asks `sources.transcript`
- *   (the events.jsonl fold) exactly when this is "none", so it must stay so.
- * - contextMeter false: the footer shows AI credits, never the context; the
- *   fill comes from `sources.context` (OTel), the window stays absent.
- * - usageLimits/usageProbe false: no limit banner was measured.
- * - asking false, remoteControl false, slash "none" (design §6).
- * - effort true: `--effort` (CLI help: alias of `--reasoning-effort`).
+ * The binary's caps (contract 2.0: facts about the BINARY only; which reader answers what is `FACTS`).
+ * - slash "none", remoteControl false (design §6).
+ * - effort: `--effort` (CLI help: alias of `--reasoning-effort`); the ladder is launch.mjs's EFFORTS.
  */
 export const CAPS = Object.freeze({
-  hooks: "plugin-inject",
-  promptBoxes: false,
-  transcript: "none",
+  turns: true,
   slash: "none",
-  contextMeter: false,
-  usageLimits: false,
-  usageProbe: false,
-  asking: false,
-  remoteControl: false,
-  effort: true,
+  effort: Object.freeze([...EFFORT_LADDER]),
   permissionModes: PERMISSION_MODES,
-  forkVia: false,
+  remoteControl: false,
 });
+
+/**
+ * Who answers which fact. Everything is the plugin's own `sources` (hooks + events.jsonl + OTel):
+ * - turns/dialogs: the hook-driven sources; no core SCREEN reader was measured against Copilot's TUI,
+ *   so none is named (dialogs while the channel is down: the phone says to answer at the terminal).
+ * - transcript: the events.jsonl fold; context: OTel (the footer shows AI credits, never the context,
+ *   the window stays absent); tokens: the OTel ledger; delivery: the events.jsonl proof.
+ * - no limits/usage/questions/plan/agents: none was measured, so they are ABSENT.
+ */
+export const FACTS = Object.freeze({
+  turns: Object.freeze([Object.freeze({ source: true })]),
+  dialogs: Object.freeze([Object.freeze({ source: true })]),
+  delivery: Object.freeze([Object.freeze({ source: true })]),
+  transcript: Object.freeze([Object.freeze({ source: true })]),
+  context: Object.freeze([Object.freeze({ source: true })]),
+  tokens: Object.freeze([Object.freeze({ source: true })]),
+});
+
+/** `copilot --version` ("GitHub Copilot CLI 1.0.91.") as "1.0.91", or null when it cannot be asked. */
+export async function copilotVersion(bin) {
+  try {
+    const { stdout } = await execFileP(bin, ["--version"], { timeout: 5000, env: { ...process.env, ...SPAWN_ENV } });
+    return /(\d+\.\d+\.\d+)/.exec(String(stdout).split("\n")[0])?.[1] ?? null;
+  } catch { return null; }
+}
 
 /** The session action that drops this session's allow rules (manifest `actions`). */
 export const FORGET_ACTION = "forget-allow-rules";
@@ -142,12 +160,17 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     label: "GitHub Copilot",
     bin: () => resolveBin(env),
     spawnEnv: SPAWN_ENV,
-    launchArgs(req) {
+    // Synchronous on purpose: a refused mode THROWS its sentence, and the plan is already decided
+    // (`settledPlan`, which the host reads at once until its create() awaits prepare).
+    prepare(req) {
       refreshHooks(); // the sink's port is today's; a hooks.json from an older run would post nowhere
-      return buildLaunch(req, { pluginDir, otelDir });
+      // instructionsVia/askRulesVia "none": this launch passes neither on (WP6 may); stated, not implied.
+      return settledPlan({ ...buildLaunch(req, { pluginDir, otelDir }), instructionsVia: "none", askRulesVia: "none" });
     },
     delivery: DELIVERY,
     caps: CAPS,
+    facts: FACTS,
+    measured: { versions: ["1.0.91"], version: () => copilotVersion(resolveBin(env)) },
     // The binary's own list for this account (models.mjs, over ACP); the host
     // asks once per boot. A failure is an empty catalogue, i.e. the free-text field.
     models: () => readModels({ bin: resolveBin(env), home, env: SPAWN_ENV }),

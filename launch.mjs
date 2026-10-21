@@ -37,7 +37,8 @@ import { SESSION_ID_RE } from "./paths.mjs";
 /** Always in the spawn env (`spawnEnv`), whatever the launch. */
 export const SPAWN_ENV = Object.freeze({ COPILOT_AUTO_UPDATE: "false" });
 
-const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+export const EFFORT_LADDER = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
+const EFFORTS = new Set(EFFORT_LADDER);
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
 
 /**

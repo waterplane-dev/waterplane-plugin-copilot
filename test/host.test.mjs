@@ -35,12 +35,16 @@ test("activate registers exactly the backend the manifest declares, and writes t
   const def = api._calls.backend[0];
   assert.ok(manifest.backends.includes(def.id));
   assert.equal(def.bin(), "/nonexistent/copilot");
-  assert.equal(def.caps.hooks, "plugin-inject");
-  assert.equal(def.caps.promptBoxes, false);
+  assert.equal(def.caps.turns, true);
+  for (const k of ["hooks", "promptBoxes", "transcript", "contextMeter", "usageLimits", "usageProbe", "asking", "forkVia"]) assert.ok(!(k in def.caps), `no 1.x caps.${k}`);
+  assert.deepEqual(def.measured.versions, ["1.0.91"]);
+  assert.equal(typeof def.measured.version, "function");
+  assert.equal(typeof def.prepare, "function");
+  assert.equal(def.launchArgs, undefined);
   assert.equal(typeof def.sources.turns.watch, "function");
   assert.equal(typeof def.sources.dialogs.watch, "function", "the dialog source is what gives the phone boxes");
   assert.equal(typeof def.sources.dialogs.pending, "function");
-  assert.equal(def.caps.transcript, "none", "the host asks sources.transcript exactly when no core reader is named");
+  assert.deepEqual(def.facts, { turns: [{ source: true }], dialogs: [{ source: true }], delivery: [{ source: true }], transcript: [{ source: true }], context: [{ source: true }], tokens: [{ source: true }] });
   for (const k of ["transcript", "delivery", "tokens", "context"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
   assert.equal(api._hook.opts.maxHoldMs, 8000);
   const hooks = JSON.parse(readFileSync(join(api.dataDir, "copilot-plugin", "hooks.json"), "utf8")).hooks;
@@ -56,7 +60,7 @@ test("the backend passes the host's own adapter (pluginDescriptor) unchanged in 
   const api = makeFakeApi({ env: { COPILOT_CLI_BIN: "/nonexistent/copilot" } });
   host.activate(api);
   const d = pluginDescriptor(api._calls.backend[0], manifest.name);
-  assert.equal(d.caps.effort, true);
+  assert.deepEqual([...d.caps.effort], ["low", "medium", "high", "xhigh", "max"]);
   assert.deepEqual([...d.caps.permissionModes], ["default", "plan", "acceptEdits", "bypassPermissions"]);
   assert.equal(d.delivery.submitKey, "\r");
   assert.ok(d.delivery.composerCursorRe.test("❯ "));
@@ -64,7 +68,7 @@ test("the backend passes the host's own adapter (pluginDescriptor) unchanged in 
   assert.equal(d.delivery.isLocalCommand("/context"), true);
   assert.equal(d.delivery.isLocalCommand("fix the bug"), false);
   assert.equal(d.spawnEnv.COPILOT_AUTO_UPDATE, "false");
-  const plan = d.launchArgs({ launch: { model: "auto" }, hookPort: 1 });
+  const plan = d.launchArgs({ launch: { model: "auto" }, hookPort: 1, cwd: "/tmp", hostSessionId: "h1", instructions: "", askRules: [] });
   assert.ok(plan.args.some((a) => a.startsWith("--session-id=")));
   assert.ok(plan.backendSessionId);
   assert.equal(plan.env.COPILOT_AUTO_UPDATE, "false");
