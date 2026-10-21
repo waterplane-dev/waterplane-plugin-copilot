@@ -24,6 +24,13 @@
  *   envelope, same field names), ids and times rewritten.
  * - the screen: a `❯` input row between two full-width `─` rules, the footer.
  *
+ * - `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` (S1): each listed dir's `AGENTS.md` is "loaded"; the fake
+ *   records which in `<session dir>/fake-instructions.json` (a test artifact, not Copilot's).
+ * - a prompt `ask: <question>` calls `ask_user` with a string enum (S3's shape): the form is drawn
+ *   as S3 captured it (default highlighted, `↑/↓ select · enter accept`), ↑/↓ move, Return
+ *   accepts (`tool.execution_complete`), Esc cancels; letters typed while it is up go to the
+ *   COMPOSER, as measured ("❯ blue [pending]").
+ *
  * Slash commands (`/context`, …) leave no event and fire no hook (measured);
  * `/exit` quits. Ctrl-C twice quits.
  */
@@ -78,6 +85,11 @@ if (!existsSync(join(dir, "workspace.yaml"))) {
 }
 const LOCK = join(dir, `inuse.${process.pid}.lock`);
 const HOLD = join(dir, `inuse.${process.pid}.hold`);
+{
+  const dirs = String(process.env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const loaded = dirs.map((d) => join(d, "AGENTS.md")).filter((p) => existsSync(p)).map((p) => ({ path: p, text: readFileSync(p, "utf8") }));
+  writeFileSync(join(dir, "fake-instructions.json"), JSON.stringify({ dirs, loaded }));
+}
 writeFileSync(LOCK, String(process.pid));
 writeFileSync(HOLD, "");
 
@@ -138,6 +150,7 @@ async function hook(name, extra) {
 const lines = [];
 let draft = "";
 let dialog = null; // { question: string[], rows: string[] (before the last), last, reason: null|string, resolve }
+let form = null; // ask_user: { message, title, desc, labels, cursor, resolve }
 let aic = 0;
 let busy = false;
 const cols = () => Math.max(40, process.stdout.columns || 100);
@@ -146,7 +159,12 @@ function draw() {
   const rows = process.stdout.rows || 30;
   const out = [" [Current]  Sessions   Issues   Pull requests   Gists", ""];
   for (const l of lines.slice(-(rows - 12))) out.push(l);
-  if (dialog) {
+  if (form) {
+    out.push(rule(), " Copilot needs information.", ` ${form.message}`, "", ` ${form.title}:`, ` ${form.desc}`);
+    [...form.labels, "Other (type your answer)"].forEach((l, i) => out.push(`${i === form.cursor ? " ❯ " : "   "}${l}`));
+    out.push("", " ↑/↓ select · enter accept · ctrl+d decline · esc cancel", rule());
+    if (draft) out.push(`❯ ${draft}`);
+  } else if (dialog) {
     out.push("", ...dialog.question.map((q) => ` ${q}`), "");
     dialog.rows.forEach((r, i) => out.push(`${i === 0 && dialog.reason == null ? " ❯ " : "   "}${i + 1}. ${r}`));
     const n = dialog.rows.length + 1;
@@ -233,9 +251,22 @@ async function prompt(text) {
   // `run: <command>` for that command (shell), or `write: <file>` for a file
   // creation (a non-shell tool).
   const runMatch = /^run:\s*(.+)$/.exec(text);
+  const askMatch = /^ask:\s*(.+)$/.exec(text);
   const writeMatch = /^write:\s*(\S+)$/.exec(text);
   try {
-  if (writeMatch) {
+  if (askMatch) {
+    const toolCallId = `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    const labels = ["Red", "Blue", "Green"];
+    const args = { message: askMatch[1], requestedSchema: { properties: { colour: { type: "string", title: "Colour", description: "Pick one.", enum: labels, default: "Blue" } } } };
+    event("assistant.message", { messageId: randomUUID(), model, content: "", interactionId, turnId: "0", toolRequests: [{ toolCallId, name: "ask_user", arguments: args }] });
+    event("tool.execution_start", { toolCallId, toolName: "ask_user", arguments: args, turnId: "0", model, toolTitle: "Asking user" });
+    void hook("notification", { message: "Copilot needs information", title: "Copilot needs information", hook_event_name: "Notification", notification_type: "elicitation_dialog" });
+    const pick = await new Promise((resolve) => { form = { message: args.message, title: "Colour", desc: "Pick one.", labels, cursor: 1, resolve }; draw(); });
+    form = null;
+    event("tool.execution_complete", { toolCallId, model, interactionId, turnId: "0", success: pick != null, result: { content: pick ?? "cancelled" } });
+    lines.push(pick != null ? ` ● you chose ${pick}` : " ✗ question cancelled");
+    event("assistant.turn_end", { turnId: "0" });
+  } else if (writeMatch) {
     const file = join(CWD, writeMatch[1]);
     const toolCallId = `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
     // measured: the call is `apply_patch` (a patch string), its hook says `edit {file_path, diff}`
@@ -333,6 +364,19 @@ process.on("SIGHUP", () => { void exit(); });
 let ctrlC = 0;
 let esc = 0; // inside an escape sequence (arrows, bracketed paste marks): 1 = after ESC, 2 = after ESC [
 function onKeys(s) {
+  if (form) {
+    // ask_user (S3's form): arrows move, Return accepts, Esc cancels; letters go to the composer
+    for (let i = 0; i < s.length;) {
+      if (s.startsWith("\x1b[A", i)) { form.cursor = Math.max(0, form.cursor - 1); i += 3; continue; }
+      if (s.startsWith("\x1b[B", i)) { form.cursor = Math.min(form.labels.length, form.cursor + 1); i += 3; continue; }
+      const ch = s[i++];
+      if (ch === "\x1b") { form.resolve(null); break; }
+      if (ch === "\r") { if (form.cursor < form.labels.length) form.resolve(form.labels[form.cursor]); break; }
+      if (ch >= " ") draft += ch;
+    }
+    draw();
+    return;
+  }
   for (const ch of s) {
     if (esc === 1) { esc = ch === "[" ? 2 : 0; continue; }
     if (esc === 2) { if (/[A-Za-z~]/.test(ch)) esc = 0; continue; }

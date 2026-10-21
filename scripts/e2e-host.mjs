@@ -27,6 +27,12 @@
 //    inside the hold makes the HOST's standing rule (badge on the session row)
 //    and the same command again is allowed by its gate with no box; a file write past the hold is
 //    answered by `1` typed by the host; "No" past the hold is Esc.
+//  - contract 2.0: the host wrote the core's instructions to the session's launch dir as
+//    AGENTS.md and COPILOT_CUSTOM_INSTRUCTIONS_DIRS named it (the fake records what it loaded);
+//    a reason typed on "No" during the hold is the hook's deny message; an `ask_user` form is
+//    published as a `question` box (its toolCallId, the enum as options, no free text), a tap
+//    on it is refused in words (the key walk is unmeasured), and it is retired when answered
+//    at the terminal.
 //
 // E2E_TRACE=1 prints every session update and the delivery ack, timestamped.
 //
@@ -146,6 +152,11 @@ try {
     `hooked before any prompt, off the session lock (hooked=${cur()?.hooked} sideChannel=${JSON.stringify(cur()?.sideChannel)})`);
   const stateDir = join(HOME, "session-state", bsid ?? "none");
   check(existsSync(join(stateDir, "workspace.yaml")), "the fake's session dir is under the temp COPILOT_HOME");
+  let told = null;
+  try { told = JSON.parse(readFileSync(join(stateDir, "fake-instructions.json"), "utf8")); } catch { /* absent */ }
+  check(told?.loaded?.length === 1 && /\/launch\/[^/]+\/instructions\/AGENTS\.md$/.test(told.loaded[0].path) && told.loaded[0].text.length > 100 && !told.loaded[0].path.startsWith(repo.path),
+    `instructions: the host wrote AGENTS.md into the session's launch dir and Copilot was pointed at it (${JSON.stringify(told && { dirs: told.dirs, loaded: told.loaded?.map((l) => [l.path, l.text.length]) })})`);
+  check(cur()?.told === undefined || cur()?.told === "env-file", `…and the session says how it was told (told=${cur()?.told})`);
 
   send({ t: "session.input", id: sid, ackId: "p1", submit: true, data: "say hello from the e2e" });
   check(await until(() => inputs.has("p1"), 20000), "the delivery is answered");
@@ -253,6 +264,34 @@ try {
   check(await until(() => evOf("permission.completed", (e) => e.data.toolCallId === askId7)[0]?.data.result.kind === "cancelled", 10000) && !existsSync(join(repo.path, "e2e-no.txt")), "nolate: cancelled (Esc stops the turn), nothing ran");
   check(await until(() => cur()?.turnActive === false && cur()?.prompt?.askId !== askId7, 10000), `nolate: the aborted turn ends with no agentStop (turnActive=${cur()?.turnActive})`);
   check(await until(() => firstCtx() === 7000, 3000), `nolate: …and its end reads that turn's checkpoint (7000; published ${JSON.stringify(endCtx.get(sid))})`);
+  await until(() => cur()?.turnActive === false, 10000);
+
+  // 2.0: a reason typed on "No" inside the hold is the hook's own deny message.
+  send({ t: "session.input", id: sid, ackId: "p8", submit: true, data: "run: touch e2e-why.txt" });
+  check(await until(() => /^call_/.test(cur()?.prompt?.askId ?? "") && cur().prompt.askId !== askId7, 15000), "why: published");
+  const p8 = cur()?.prompt;
+  check(p8?.options?.find((o) => o.index === 3)?.takesText === true, `why: the No row takes a reason inside the hold (${JSON.stringify(p8?.options?.find((o) => o.index === 3))})`);
+  send({ t: "session.input", id: sid, ackId: "tap8", data: "", expectPrompt: promptFingerprint(p8), promptChoice: 3, promptText: "use a temp dir instead" });
+  check(await until(() => inputs.has("tap8"), 10000) && inputs.get("tap8").ok === true, `why: tap No with a reason (${JSON.stringify(inputs.get("tap8"))})`);
+  const why = (e) => e.data.permissionRequest?.fullCommandText === "touch e2e-why.txt";
+  check(await until(() => evOf("permission.requested", why).length === 1, 10000), "why: the hook answered");
+  const req8 = evOf("permission.requested", why)[0];
+  check(evOf("permission.completed", (e) => e.data.requestId === req8?.data.requestId)[0]?.data.result.message === "use a temp dir instead" && !existsSync(join(repo.path, "e2e-why.txt")),
+    "why: denied with exactly the typed reason, nothing ran");
+  await until(() => cur()?.turnActive === false, 10000);
+
+  // 2.0: ask_user is a question box.
+  send({ t: "session.input", id: sid, ackId: "p9", submit: true, data: "ask: which colour?" });
+  check(await until(() => cur()?.prompt?.kind === "question", 15000), `ask: published as a question (${JSON.stringify(cur()?.prompt)})`);
+  const q9 = cur()?.prompt;
+  const ask9 = evOf("tool.execution_start", (e) => e.data.toolName === "ask_user").at(-1);
+  check(q9?.askId === ask9?.data.toolCallId && JSON.stringify(q9?.options?.map((o) => o.label)) === JSON.stringify(["Red", "Blue", "Green"]) && !q9?.freeText,
+    `ask: its toolCallId, the enum as options, no typed answer (${JSON.stringify(q9 && { askId: q9.askId, options: q9.options, freeText: q9.freeText })})`);
+  send({ t: "session.input", id: sid, ackId: "tap9", data: "", expectPrompt: promptFingerprint(q9), promptChoice: 3 });
+  check(await until(() => inputs.has("tap9"), 10000) && inputs.get("tap9").ok === false && /at the terminal/.test(inputs.get("tap9").reason ?? ""), `ask: a tap is refused in words, nothing pressed (${JSON.stringify(inputs.get("tap9"))})`);
+  send({ t: "session.input", id: sid, data: "\r" }); // the person at the desk accepts the highlighted default
+  check(await until(() => evOf("tool.execution_complete", (e) => e.data.toolCallId === ask9?.data.toolCallId)[0]?.data.result.content === "Blue", 10000), "ask: answered at the terminal (the default)");
+  check(await until(() => cur()?.prompt?.askId !== q9?.askId, 5000), "ask: the question is retired by its completion");
   ws.close();
 } catch (e) {
   console.log("FAIL: threw", e);
