@@ -12,9 +12,34 @@ that it is not. MIT licensed.
 ## Plugin contract
 
 Written for waterplane plugin contract **2.0** (`"apiVersion": "2.0"`), tested against the main repo at
-commit `3943f989` (tag `plugin-api-2.0.0`); both are also in `package.json` under `"waterplane"`. This is
-the minimal bridge port from 1.x (`prepare()` for `launchArgs()`, `facts` + binary `caps`,
-`measured`); behaviour is unchanged.
+commit `1ef834a7` (`node --test`, and `scripts/e2e-host.mjs` against its build); both are also in
+`package.json` under `"waterplane"`. It uses the host's 2.0 toolkit instead of its own copies:
+`api.bindConversation` (which conversation a `--continue` launch is — `slots.mjs`), `api.tail` (every
+JSONL log — `jsonl.mjs`), `api.screen` (the `ask_user` form's highlight, for the key walk that is
+still off). Measured on Copilot 1.0.91 (`measured.versions`); real-CLI facts from the main repo's
+spike S0–S5 of 2026-10-21 (`docs/analysis/backend-v2-impl.md` §4).
+
+How close to claude, per fact (`facts` in `host.mjs`):
+
+| fact | claude | Copilot here | why not more |
+|---|---|---|---|
+| turns | hooks | hooks (`userPromptSubmitted` → started, with the accepted words as `TurnFacts.prompt`; `agentStop` → ended) | — |
+| dialogs | screen boxes | the held permission hook, then Copilot's own dialog by keys | — |
+| typed "No" reason | yes | **inside the hold**: the hook's `deny` message. **Past it**: `3`, the reason, Return (S3b measured) — only on a host that types keys then words (`api.supports.dialogKeysThenTyped`); today's host has no such answer shape, so it stays Esc | host gap |
+| questions | `question.ts` | `ask_user` posed (its `toolCallId`, the `enum` as options); **answered at the terminal** | S3 re-read: letters typed at the form land in the COMPOSER as a queued prompt — so never a typed answer; the ↑/↓ + Return walk is built (`askKeys`, off) but unmeasured |
+| instructions | plugin dir | `env-file`: the host writes `session:instructions/AGENTS.md`, `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it (S1) | — |
+| ask rules | native | `gate` (the host's answer gate) | Copilot has allow/deny flags, no ask (S2) |
+| context | meter + log | tokens from the usage checkpoint / OTel span; no window | `session/new` names no window (S0) |
+| transcript, delivery, tokens | log | `events.jsonl` + OTel | — |
+| effort | ladder | absent | parser accepts `--effort`, no ladder echoed at 0 credits (S4) |
+| plan | planbox | absent | plan is an ACP session mode; nothing read off it (S4) |
+| usage | `/usage` | absent here | the in-repo `copilot-usage` extension already registers source `copilot` (backend `copilot`) from the same account; a second source would count it twice |
+| limits | `limit.ts` | absent | no stated CLI wall signal measured |
+| agents, conversations, fork | store | absent | no measured list; no fork flag (S5) |
+
+Two host gaps keep plugin code alive: the turn-end gate in `turns.mjs` (the host reads the context
+sample once at the end edge, with no bounded wait for one whose `at` is at or after it), and the
+keys-then-words dialog answer above.
 
 ## Install
 
@@ -43,8 +68,9 @@ during the hold (see below).
 
 ## What it does today
 
-- **Launch.** `copilot --session-id=<uuid> --plugin-dir <generated dir> [--model m] [--effort e]
-  [permission flags]`, with `COPILOT_AUTO_UPDATE=false` always (an update prompt would swallow typed
+- **Launch.** `copilot --session-id=<uuid> --plugin-dir <generated dir> [--model m]
+  [permission flags]` (`--model` only when the person picked one — this account is Auto-only;
+  `--effort` never: no measured ladder), with `COPILOT_AUTO_UPDATE=false` always (an update prompt would swallow typed
   words) and `COPILOT_OTEL_FILE_EXPORTER_PATH` pointing at a per-launch file in the plugin's own data
   dir. The id is minted by the plugin, so the session knows its Copilot id from the first second.
   Re-opening a known session uses `--session-id` too (measured: it resumes with history, where
@@ -124,12 +150,13 @@ during the hold (see below).
 | | status |
 |---|---|
 | Copilot's own "don't ask again" from the phone during the hold | the hook cannot persist one; the host's answer gate keeps a rule for the exact command, in this session (above; needs a daemon with standing rules — `api.ruleAllows`) |
-| A typed reason with "No" past the hold | Esc stops the turn; the reason field takes free text the host's bounded keys cannot type safely — answer at the terminal, or prompt after |
+| A typed reason with "No" past the hold | measured (S3b: `3`, the reason, a separate Return); offered only on a host with `supports.dialogKeysThenTyped` — until then Esc stops the turn |
+| Answering `ask_user` from the phone | the question is shown with its choices; a pick is refused in words until the ↑/↓ + Return walk is measured; typed words never (they land in the composer) |
 | Terminal dialogs for URL / path / sandbox-bypass requests | not answered from the phone (refused in words); MCP, memory and extension-tool dialogs are answered from the 1.0.91 source's shape, not measured |
 | A turn aborted while nobody watches | its end comes from the `abort` line, which is read while a phone watches the session; otherwise the host's own fallback ends it |
 | Model list | the binary's own, per account: `copilot --acp --stdio` → `session/new` → `models.availableModels` (models.mjs), asked once per host boot; the throwaway session is closed and its dir removed. `auto` is an alias, every id hosted. Any failure ⇒ empty ⇒ the free-text field |
 | `--no-remote` | exists on 1.0.91 but not passed: remote control is off by default (`remoteSteerable: false`) and no config key turns it on |
-| `--effort`, `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised |
+| `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised. `--effort` too, and is not passed |
 
 ## Measured on 1.0.91
 
@@ -178,7 +205,7 @@ clean. **0.72 AIC in all** (0.26 + 0.47, `session.usage_checkpoint`). The second
 from this probe, both re-checked against the real binary). Every path a person takes from the
 phone — launch, deliver, turn edges, permission allow / deny inside the hold, the terminal dialog
 answered by a tap past it, transcript, AI credits, resume — worked end to end through the real
-host. Caveats, said rather than hidden: the permission modes and `--effort` are parsed but their
+host. Caveats, said rather than hidden: the permission modes are parsed but their
 effect was not exercised; the folder-trust dialog is answered at the terminal (Return), like any
 CLI's. The three limits this verdict used to list are fixed and measured below
 ("fix/known-limits").
@@ -188,20 +215,20 @@ CLI's. The three limits this verdict used to list are fixed and measured below
 | file | what |
 |---|---|
 | `waterplane-plugin.json` | the manifest: id `copilot`, `backends: ["copilot"]`, the env names, the hold setting |
-| `host.mjs` | `activate(api)`: hooks dir, `api.onHook`, `api.backend` (caps + sources) |
-| `launch.mjs` | binary resolution, argv, env |
+| `host.mjs` | `activate(api)`: hooks dir, `api.onHook`, `api.backend` (caps, facts, sources) |
+| `launch.mjs` | binary resolution, argv, env, the instructions file, `askRulesVia` |
 | `hooks.mjs`, `hook/post.mjs` | the generated `--plugin-dir` plugin and the runner its hooks invoke |
 | `delivery.mjs` | the composer / trust / slash literals |
-| `router.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | which session a hook belongs to; turn edges (the end held for its usage checkpoint); channel health off the session lock |
-| `dialogs.mjs` | the permission dialog source: the held hook, its fall-through, the `events.jsonl` tail; option 2's `remember` |
-| `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `tail.mjs` | the fold + delivery proof, the AI-credit ledger, the context sample (checkpoint or span, the fresher), the OTel `chat` span reader, the byte-offset JSONL tail |
+| `slots.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | one slot per session and which a hook belongs to (`api.bindConversation`); turn edges (the end held for its usage checkpoint); channel health off the session lock |
+| `dialogs.mjs` | the permission dialog source (the held hook, its fall-through, the typed No, option 2's `remember`) and the `ask_user` question source, off the `events.jsonl` tail |
+| `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `jsonl.mjs` | the fold + delivery proof, the AI-credit ledger, the context sample (checkpoint or span, the fresher), the OTel `chat` span reader, `api.tail` with a reset callback |
 | `scripts/probe.mjs` | the opt-in real-binary check (`--spend`; `--launch-only` and `PROBE_STEPS` spend less or nothing) |
-| `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, `run: <cmd>` / `write: <file>` raising a permission hook that blocks on the sink until `timeoutSec`, the numbered dialog (a digit commits a row, the last row's digit only opens its reason field, Esc aborts the turn with no agentStop), a checkpoint at once and the OTel span 2.5 s later |
+| `fake/copilot.mjs` | a fake `copilot` for tests: session dir + locks, the hooks from `--plugin-dir`, events built from the fixture, a `❯` composer, `run: <cmd>` / `write: <file>` raising a permission hook that blocks on the sink until `timeoutSec`, the numbered dialog (a digit commits a row, the last row's digit only opens its reason field, Esc aborts the turn with no agentStop), a checkpoint at once and the OTel span 2.5 s later; `ask: <q>` drawing S3's `ask_user` form; which `AGENTS.md` it was pointed at |
 
 ## Tests
 
 ```bash
-node --test                 # 83: unit, the measured fixtures, and the fake CLI driving the generated hooks
+node --test                 # 100: unit, the measured fixtures, and the fake CLI driving the generated hooks
 node scripts/e2e-host.mjs   # a real daemon from the main repo (MAIN_REPO, built; the rule checks need standing rules), this plugin, the fake copilot
 node scripts/probe.mjs --spend   # the REAL copilot through a real daemon: spends ~0.7 AI credits
 PROBE_STEPS=rule,write,nolate node scripts/probe.mjs --spend   # the fix/known-limits checks: ~0.47
