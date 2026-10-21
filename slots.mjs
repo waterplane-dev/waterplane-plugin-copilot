@@ -1,0 +1,157 @@
+/**
+ * One slot per host session — what the sources (`turns.mjs`, `dialogs.mjs`, `channel.mjs`) hang
+ * their listeners on — and which slot a hook belongs to.
+ *
+ * Every Copilot hook payload carries `sessionId` and `cwd` (measured on 1.0.91, all 8 sampled
+ * hooks). A launch with `--session-id=<uuid>` knows its id, so its hooks route by id. A
+ * `--continue` launch does not: its slot waits UNBOUND, and WHICH Copilot conversation is its is
+ * the host's decision (`api.bindConversation`, contract 2.0 — the one ladder every backend that
+ * keeps its own store uses), over the candidates the hooks show here:
+ *
+ *  - `fresh`: the Copilot ids hooks arrived with from this slot's cwd that no slot holds. Rung 1
+ *    is ENTITLED (`createsRecord`) only while this slot is the ONLY unbound one in that cwd: every
+ *    hook comes from a process this host spawned with this plugin's `--plugin-dir`, so a stray id
+ *    in a cwd with one waiting slot is that slot's; two waiting slots is "cannot say".
+ *  - `prompt`: the stray ids whose `userPromptSubmitted.prompt` equals words the host delivered to
+ *    THIS slot (`delivery.landed`), whole-string. The ladder adopts one only when a LATER pass
+ *    still finds it alone (`BIND_CONFIRM_MS`); a pass runs on every hook and on the channel's tick.
+ *
+ * A hook no slot can claim is answered `{}` and dropped rather than given to a guess.
+ */
+import { realpathSync } from "node:fs";
+import { SESSION_ID_RE } from "./paths.mjs";
+
+const real = (p) => {
+  if (typeof p !== "string" || !p) return null;
+  try { return realpathSync(p); } catch { return p; }
+};
+
+/** How many delivered prompts an unbound slot remembers, and how many stray ids are kept. */
+const SENT_MAX = 8;
+const STRAYS_MAX = 64;
+
+/**
+ * `bind` is `api.bindConversation` (the host's pure ladder). Without it nothing unbound is ever
+ * adopted: absent, not guessed.
+ */
+export function createSlots({ bind = null, now = Date.now } = {}) {
+  /** Copilot session id → slot. */
+  const byId = new Map();
+  /** Host session id → slot (what a `SourceSession` maps to). */
+  const byHost = new Map();
+  /** Slots whose Copilot id is not known yet (`--continue`). */
+  const unbound = new Set();
+  /** Copilot ids seen on hooks that no slot holds yet: id → { cwd, prompts: Set }. */
+  const strays = new Map();
+
+  const makeSlot = (ss) => ({
+    id: ss.backendSessionId ? ss.backendSessionId.toLowerCase() : null,
+    hostId: ss.id,
+    cwd: real(ss.cwd),
+    health: { state: "down", since: now(), note: "waiting for Copilot to open the session" },
+    turns: new Set(),
+    dialogs: new Set(),
+    questions: new Set(),
+    healths: new Set(),
+    /** Per-slot state a source keeps (dialogs' pending map, the lock poll, …). */
+    state: {},
+  });
+
+  /** The slot for one host session, created on first ask. */
+  function slotFor(ss) {
+    let s = byHost.get(ss.id);
+    if (s) return s;
+    s = makeSlot(ss);
+    if (s.id) {
+      // A resumed id that another live host session still holds keeps ONE
+      // slot per Copilot id: the newer host session takes it over.
+      byId.set(s.id, s);
+    } else {
+      unbound.add(s);
+    }
+    byHost.set(ss.id, s);
+    return s;
+  }
+
+  function release(slot) {
+    if (byHost.get(slot.hostId) === slot) byHost.delete(slot.hostId);
+    if (slot.id && byId.get(slot.id) === slot) byId.delete(slot.id);
+    unbound.delete(slot);
+  }
+
+  function adopt(slot, id) {
+    unbound.delete(slot);
+    strays.delete(id);
+    slot.id = id;
+    slot.state.bindSeen = null;
+    byId.set(id, slot);
+  }
+
+  /** One pass of the host's ladder for every unbound slot. Returns the slots it bound. */
+  function rebind() {
+    if (typeof bind !== "function" || !unbound.size || !strays.size) return [];
+    const out = [];
+    const adopted = new Set(byId.keys());
+    for (const slot of [...unbound]) {
+      const here = [...strays].filter(([, v]) => v.cwd === slot.cwd);
+      if (!here.length) continue;
+      const sent = slot.state.sent ?? [];
+      const look = {
+        createsRecord: [...unbound].filter((s) => s.cwd === slot.cwd).length === 1,
+        fresh: here.map(([id]) => id),
+        prompt: here.filter(([, v]) => sent.some((t) => v.prompts.has(t))).map(([id]) => id),
+        adopted,
+        seen: slot.state.bindSeen ?? null,
+        now: now(),
+      };
+      let v;
+      try { v = bind(look); } catch { v = null; }
+      slot.state.bindSeen = v?.seen ?? null;
+      if (v?.id && SESSION_ID_RE.test(v.id) && !adopted.has(v.id)) {
+        adopt(slot, v.id);
+        adopted.add(v.id);
+        out.push(slot);
+      }
+    }
+    return out;
+  }
+
+  /** The slot a hook payload belongs to, or null (not ours, or cannot say yet). */
+  function route(payload) {
+    const sid = payload && typeof payload.sessionId === "string" ? payload.sessionId.toLowerCase() : null;
+    if (!sid || !SESSION_ID_RE.test(sid)) return null;
+    const hit = byId.get(sid);
+    if (hit) return hit;
+    const cwd = real(payload.cwd);
+    if (!cwd || !unbound.size) return null;
+    let st = strays.get(sid);
+    if (!st) {
+      st = { cwd, prompts: new Set() };
+      strays.set(sid, st);
+      while (strays.size > STRAYS_MAX) strays.delete(strays.keys().next().value);
+    }
+    if (typeof payload.prompt === "string" && payload.prompt.trim()) st.prompts.add(payload.prompt.trim());
+    rebind();
+    return byId.get(sid) ?? null;
+  }
+
+  /** Words the host delivered to this session (`delivery.landed`): the prompt rung's evidence. */
+  function noteSent(slot, text) {
+    if (!slot || slot.id || typeof text !== "string" || !text.trim()) return;
+    const sent = (slot.state.sent ??= []);
+    sent.push(text.trim());
+    if (sent.length > SENT_MAX) sent.shift();
+  }
+
+  /** Publish a health change to the host (only on an actual change of state). */
+  function setHealth(slot, state, note) {
+    if (slot.health.state === state && slot.health.note === note) return;
+    slot.health = { state, since: slot.health.state === state ? slot.health.since : now(), ...(note ? { note } : {}) };
+    for (const h of slot.healths) { try { h(slot.health); } catch { /* a listener's fault is its own */ } }
+  }
+
+  /** The slot of a host session id, if one exists — never creates one. */
+  const peek = (hostId) => byHost.get(hostId) ?? null;
+
+  return { slotFor, peek, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
+}

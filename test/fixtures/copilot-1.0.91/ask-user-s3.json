@@ -1,0 +1,63 @@
+{
+ "_note": "Copilot 1.0.91, spike S3 2026-10-21 (spike-v2.mjs, Auto -> mai-code-1.1-flash): the ask_user tool.execution_start, and the screen ~3 s after `blue` then a separate Return were typed. The form is STILL open and the typed word sits in the composer as a queued prompt ('❯ blue  [pending]').",
+ "toolExecutionStart": {
+  "type": "tool.execution_start",
+  "data": {
+   "toolCallId": "call_k7lIjhDw5TYUQ1iGPaiNk3Gi",
+   "toolName": "ask_user",
+   "arguments": {
+    "message": "I need a quick preference check before answering you back. Which colour do you prefer?",
+    "requestedSchema": {
+     "properties": {
+      "preferred_color": {
+       "type": "string",
+       "title": "Preferred colour",
+       "description": "Choose the colour you like best.",
+       "enum": [
+        "Red",
+        "Blue",
+        "Green",
+        "Yellow",
+        "Purple",
+        "Orange",
+        "Black",
+        "White"
+       ],
+       "default": "Blue"
+      }
+     }
+    }
+   },
+   "turnId": "0",
+   "model": "mai-code-1.1-flash",
+   "toolTitle": "Asking user"
+  },
+  "id": "5b71ca8d-96d6-41b4-ba9c-1942e90cdc6f",
+  "timestamp": "2026-10-21T22:14:30.327Z",
+  "parentId": "bf5da73f-06c2-419a-9c36-ae95c922ceee"
+ },
+ "screenAfterTyped": [
+  " ○ Asking user Waiting for response",
+  " ❯ blue                                                                                                          00:14",
+  "   └ [pending]",
+  "",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+  " Copilot needs information.",
+  " I need a quick preference check before answering you back. Which colour do you prefer?",
+  "",
+  " Preferred colour:",
+  " Choose the colour you like best.",
+  "   Red",
+  " ❯ Blue",
+  "   Green",
+  "   Yellow",
+  "   Purple",
+  "   Orange",
+  "   Black",
+  "   White",
+  "   Other (type your answer)",
+  "",
+  " ↑/↓ select · enter accept · ctrl+d decline · esc cancel",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+ ]
+}

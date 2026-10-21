@@ -23,7 +23,7 @@
  */
 import { existsSync, statSync } from "node:fs";
 import { eventsPath, sessionDir, SESSION_ID_RE } from "./paths.mjs";
-import { createTail } from "./tail.mjs";
+import { follow } from "./jsonl.mjs";
 
 const LABEL_MAX = 120;
 const PROMPT_LABEL_MAX = 80;
@@ -185,7 +185,7 @@ function resolver(home, idOf) {
 }
 
 /** One cached fold + cursor per session file. */
-function createFolds(home) {
+function createFolds(home, tail) {
   const folds = new Map(); // id → { fold, tail }
   return function foldFor(id) {
     const path = eventsPath(home, id);
@@ -193,19 +193,19 @@ function createFolds(home) {
     if (f) { folds.delete(id); folds.set(id, f); } // LRU touch
     else {
       const holder = { fold: foldEvents() };
-      holder.tail = createTail(path, (e) => holder.fold.push(e));
+      holder.tail = follow(tail, path, (e) => holder.fold.push(e), { onReset: () => { holder.fold = foldEvents(); } });
       f = holder;
       folds.set(id, f);
-      while (folds.size > MAX_CACHED) folds.delete(folds.keys().next().value);
+      while (folds.size > MAX_CACHED) { const k = folds.keys().next().value; folds.get(k).tail.close(); folds.delete(k); }
     }
-    const r = f.tail.advance(() => { f.fold = foldEvents(); });
+    const r = f.tail.advance();
     return r === null ? null : f;
   };
 }
 
-export function createTranscriptSource({ home, idOf } = {}) {
+export function createTranscriptSource({ home, idOf, tail } = {}) {
   const idFor = resolver(home, idOf);
-  const foldFor = createFolds(home);
+  const foldFor = createFolds(home, tail);
   return {
     /** mtime of events.jsonl, or null (no id, no file yet). */
     updatedAt(ss) {
@@ -225,9 +225,9 @@ export function createTranscriptSource({ home, idOf } = {}) {
   };
 }
 
-export function createDeliverySource({ home, idOf, pollMs = 100 } = {}) {
+export function createDeliverySource({ home, idOf, tail, pollMs = 100, onSend = null } = {}) {
   const idFor = resolver(home, idOf);
-  const foldFor = createFolds(home);
+  const foldFor = createFolds(home, tail);
   const turnsSince = (id, since) => {
     const f = foldFor(id);
     return f ? f.fold.userMessages().filter((u) => u.at >= since) : null;
@@ -235,6 +235,8 @@ export function createDeliverySource({ home, idOf, pollMs = 100 } = {}) {
   return {
     /** Whole-string equality (trimmed both sides), after `sinceMs`; false at the timeout. */
     async landed(ss, text, sinceMs, timeoutMs) {
+      // An unbound (`--continue`) session's words are the evidence `slots.mjs` binds it by.
+      try { onSend?.(ss, text); } catch { /* the binder's own */ }
       const id = idFor(ss);
       if (!id) return false;
       const want = String(text).trim();

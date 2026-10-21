@@ -7,13 +7,14 @@
  * exporter had flushed when turn 2 ended: the source used to answer 16343 there.
  */
 import { test } from "node:test";
+import { fakeTail } from "./fakeapi.mjs";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpointSample, createContextSource } from "../context.mjs";
 import { createEndGate } from "../turns.mjs";
-import { createRouter } from "../router.mjs";
+import { createSlots as createRouter } from "../slots.mjs";
 import { makeHookHandler } from "../host.mjs";
 import { createDialogs } from "../dialogs.mjs";
 
@@ -49,7 +50,7 @@ test("checkpointSample: the main conversation's lastActiveModel entry, not a sta
 test("the freshest record wins: the checkpoint over a span the exporter flushed a turn ago, a newer span over an older checkpoint", () => {
   const w = world(86);
   try {
-    const src = createContextSource({ otelDir: w.otelDir, home: w.home });
+    const src = createContextSource({ tail: fakeTail, otelDir: w.otelDir, home: w.home });
     assert.equal(src.sample(ss).usedTok, 16515, "turn 2's own prompt — the span file alone said 16343 (turn 1)");
     w.append(87, 141);
     assert.equal(src.sample(ss).usedTok, 15533, "turn 3");
@@ -88,7 +89,7 @@ test("through the hook handler: when the host hears agentStop, the context sampl
   try {
     const router = createRouter();
     const slot = router.slotFor(ss);
-    const context = createContextSource({ otelDir: w.otelDir, home: w.home });
+    const context = createContextSource({ tail: fakeTail, otelDir: w.otelDir, home: w.home });
     const atEnd = [];
     slot.turns.add({ started: () => {}, ready: () => {}, ended: () => atEnd.push(context.sample(ss)?.usedTok) }); // what the host's checkContext reads
     const endGate = createEndGate({ ready: (s, at) => context.checkpointSince(s.id, at), waitMs: 1500, stepMs: 10 });

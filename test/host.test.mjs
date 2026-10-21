@@ -44,8 +44,11 @@ test("activate registers exactly the backend the manifest declares, and writes t
   assert.equal(typeof def.sources.turns.watch, "function");
   assert.equal(typeof def.sources.dialogs.watch, "function", "the dialog source is what gives the phone boxes");
   assert.equal(typeof def.sources.dialogs.pending, "function");
-  assert.deepEqual(def.facts, { turns: [{ source: true }], dialogs: [{ source: true }], delivery: [{ source: true }], transcript: [{ source: true }], context: [{ source: true }], tokens: [{ source: true }] });
-  for (const k of ["transcript", "delivery", "tokens", "context"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
+  assert.deepEqual(def.facts, { turns: [{ source: true }], dialogs: [{ source: true }], questions: [{ source: true }], delivery: [{ source: true }], transcript: [{ source: true }], context: [{ source: true }], tokens: [{ source: true }] });
+  for (const k of ["usage", "limits", "plan", "agents", "conversations"]) assert.ok(!(k in def.facts), `${k} is ABSENT (unmeasured, or another source owns it)`);
+  for (const k of ["transcript", "delivery", "tokens", "context", "questions"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
+  assert.equal(def.caps.effort, undefined, "no measured effort ladder: no knob");
+  for (const f of ["router.mjs", "tail.mjs"]) assert.ok(!existsSync(join(REPO, f)), `${f} is gone: the host's toolkit does it (bindConversation, tail)`);
   assert.equal(api._hook.opts.maxHoldMs, 8000);
   const hooks = JSON.parse(readFileSync(join(api.dataDir, "copilot-plugin", "hooks.json"), "utf8")).hooks;
   assert.equal(hooks.permissionRequest[0].timeoutSec, 10);
@@ -60,7 +63,7 @@ test("the backend passes the host's own adapter (pluginDescriptor) unchanged in 
   const api = makeFakeApi({ env: { COPILOT_CLI_BIN: "/nonexistent/copilot" } });
   host.activate(api);
   const d = pluginDescriptor(api._calls.backend[0], manifest.name);
-  assert.deepEqual([...d.caps.effort], ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(d.caps.effort, undefined);
   assert.deepEqual([...d.caps.permissionModes], ["default", "plan", "acceptEdits", "bypassPermissions"]);
   assert.equal(d.delivery.submitKey, "\r");
   assert.ok(d.delivery.composerCursorRe.test("❯ "));
@@ -68,10 +71,14 @@ test("the backend passes the host's own adapter (pluginDescriptor) unchanged in 
   assert.equal(d.delivery.isLocalCommand("/context"), true);
   assert.equal(d.delivery.isLocalCommand("fix the bug"), false);
   assert.equal(d.spawnEnv.COPILOT_AUTO_UPDATE, "false");
-  const plan = d.launchArgs({ launch: { model: "auto" }, hookPort: 1, cwd: "/tmp", hostSessionId: "h1", instructions: "", askRules: [] });
+  const plan = await d.prepare({ launch: { model: "auto" }, hookPort: 1, cwd: "/tmp", hostSessionId: "h1", instructions: "Put pictures in .claude/outbox/.", askRules: [] });
   assert.ok(plan.args.some((a) => a.startsWith("--session-id=")));
   assert.ok(plan.backendSessionId);
   assert.equal(plan.env.COPILOT_AUTO_UPDATE, "false");
+  assert.equal(plan.instructionsVia, "env-file");
+  assert.equal(plan.askRulesVia, "gate");
+  assert.deepEqual(plan.files, [{ path: "session:instructions/AGENTS.md", content: "Put pictures in .claude/outbox/." }]);
+  assert.match(plan.env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS, /(^|,)session:instructions$/);
   assert.deepEqual(await d.models(), { aliases: [], ids: [] });
 });
 

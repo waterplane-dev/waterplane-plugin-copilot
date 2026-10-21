@@ -58,6 +58,24 @@
  *   later identical request is answered only if `api.ruleAllows` says so
  *   (host.mjs). This file keeps no rule. A host without standing rules
  *   (`rulesSupported` false) gets no option 2 during the hold at all.
+ * - "No, and tell Copilot what to do differently" takes a typed REASON (contract 2.0
+ *   `takesText`). During the hold the reason is the hook's own `deny` message. Past it, S3b
+ *   (2026-10-21, a shell dialog with its three rows) measured `3` opening the row's text field,
+ *   the typed reason, then a SEPARATE Return: denied, nothing ran, and the model read the reason
+ *   ("User feedback: do nothing"). That answer is keys THEN words, which a host types only when it
+ *   says so (`api.supports.dialogKeysThenTyped`, `keysThenTyped` here); on any other host — and on
+ *   any dialog but the measured shape — No past the hold stays Esc, which stops the turn.
+ *
+ * Copilot's `ask_user` form — a question with NO permission dialog — is the `QuestionSource`
+ * (`questions`): posed from its `tool.execution_start` under its `toolCallId` (S3), its choices
+ * the `requestedSchema` property's `enum`, retired by that call's `tool.execution_complete`, an
+ * abort or a session (re)start. What S3 measured about ANSWERING it (its raw capture, read again
+ * here): the form draws the enum as a list with the default highlighted, `↑/↓ select · enter
+ * accept`; letters typed while it is up land in Copilot's COMPOSER as a queued prompt ("❯ blue
+ * [pending]"), and the form stays open. So a typed answer is never offered (`freeText` false), and
+ * a pick is answered at the terminal until the key walk (`askKeys`) is measured: `askKeysMeasured`
+ * is off, and the pick is refused in words. A form that is not one string enum (free text, several
+ * fields) is not posed; it is reported `unposed`, which the host shows as waiting on you.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { eventsPath } from "./paths.mjs";
@@ -74,6 +92,75 @@ export const DIALOG_KEYS = Object.freeze({ 1: "1", 2: "2", 3: "\x1b" });
 export const ASK_TOOL = "ask_user";
 
 export const TUI_KINDS = new Set(["commands", "write", "mcp", "memory", "custom-tool"]);
+
+/**
+ * Is the `ask_user` key walk (`askKeys`) MEASURED? No: S3 typed words, which went to the composer;
+ * nobody has yet pressed ↑/↓ + Return at the form and read what Copilot logged. Until a spike
+ * does (and says whether one PTY write of several arrows and a Return is read as keys, not a
+ * paste), a pick from the phone is refused in words.
+ */
+export const ASK_KEYS_MEASURED = false;
+/** The form's last row (S3 capture) and its key hint. */
+export const ASK_OTHER_ROW = "Other (type your answer)";
+const ASK_HINT_RE = /↑\/↓ select\b.*\benter accept/;
+const ASK_HEAD_RE = /Copilot needs information\./;
+const ARROW_UP = "\x1b[A", ARROW_DOWN = "\x1b[B";
+/** `SOURCE_KEYS_MAX` (8): the arrows plus one Return. */
+const ASK_MAX_MOVES = 7;
+
+/**
+ * The question an `ask_user` call poses, or null when it is not one the phone can be shown with
+ * choices: its `message`, and exactly ONE `requestedSchema` property that is a string `enum`
+ * (S3's shape). Exported for tests.
+ */
+export function askQuestion(args) {
+  const message = str(args?.message);
+  const props = args?.requestedSchema?.properties;
+  if (!message || !props || typeof props !== "object") return null;
+  const keys = Object.keys(props);
+  if (keys.length !== 1) return null;
+  const p = props[keys[0]];
+  if (!p || (p.type !== undefined && p.type !== "string") || !Array.isArray(p.enum) || !p.enum.length) return null;
+  if (!p.enum.every((v) => typeof v === "string" && v.trim())) return null;
+  const head = [str(p.title), str(p.description)].filter(Boolean).join(" — ");
+  return {
+    question: head ? `${message}\n${head}` : message,
+    labels: p.enum.slice(0, 12),
+    def: typeof p.default === "string" ? p.enum.indexOf(p.default) : -1,
+  };
+}
+
+/**
+ * Where the form's highlight is, read off the host's screen (`api.screen`): the row index (0-based,
+ * the `Other` row last) of the one `❯` among exactly `labels` + `Other`, in order, right above the
+ * key hint, under the form's heading. Anything else — a wrapped label, a second cursor, no form —
+ * is null. Exported for tests.
+ */
+export function askCursor(rows, labels) {
+  if (!Array.isArray(rows) || !Array.isArray(labels) || !labels.length) return null;
+  let hint = -1;
+  for (let i = rows.length - 1; i >= 0; i--) if (ASK_HINT_RE.test(rows[i] ?? "")) { hint = i; break; }
+  if (hint < 0) return null;
+  let i = hint - 1;
+  while (i >= 0 && !String(rows[i] ?? "").trim()) i--;
+  const want = [...labels, ASK_OTHER_ROW];
+  const start = i - labels.length;
+  if (start < 0 || !rows.slice(0, start).some((r) => ASK_HEAD_RE.test(r ?? ""))) return null;
+  let cursor = -1;
+  for (let k = 0; k < want.length; k++) {
+    const m = /^\s*(❯\s+)?(.*?)\s*$/.exec(String(rows[start + k] ?? ""));
+    if (!m || m[2] !== want[k]) return null;
+    if (m[1]) { if (cursor >= 0) return null; cursor = k; }
+  }
+  return cursor >= 0 ? cursor : null;
+}
+
+/** The keys that move the highlight from `cursor` to `target` and accept it, or null past `SOURCE_KEYS_MAX`. */
+export function askKeys(cursor, target) {
+  const d = target - cursor;
+  if (Math.abs(d) > ASK_MAX_MOVES) return null;
+  return (d > 0 ? ARROW_DOWN : ARROW_UP).repeat(Math.abs(d)) + "\r";
+}
 
 /** How often a watched session's events.jsonl is read for new lines. */
 export const EVENTS_POLL_MS = 500;
@@ -101,21 +188,31 @@ export const RULE_NOTE = "Copilot's permission hook can only allow once, so wate
 /** "No" at the terminal dialog, from the phone: Esc — which STOPS the turn (measured), so it says so. */
 export const NO_STOP_LABEL = "No, and stop this turn (Esc)";
 const ESC_NOTE = "From the phone this presses Esc, the dialog's own \"Esc to stop\": Copilot cancels this request and stops the turn. To tell it what to do instead, send a prompt after it stops — or answer at the terminal, where option 3 takes a typed reason.";
+/** Row 3's own words, and what a reason does (hook phase: the deny message; terminal phase: `3`, the words, Return). */
+export const NO_TELL_LABEL = "No, and tell Copilot what to do differently";
+const TELL_NOTE_HOOK = "Type a reason and Copilot is told it, as the answer to its permission request, and goes on without running this. Without one it is told the person denied it from their phone.";
+const TELL_NOTE_TUI = "Type a reason: this presses 3 at Copilot's dialog, types the reason into the field it opens, then Return — Copilot does not run it, reads the reason, and goes on. Without a reason this presses Esc, which stops the turn.";
+/** The digit of the No row in the measured three-row shell dialog (S3b). */
+const NO_ROW_DIGIT = "3";
 
 /**
  * A shell dialog's options for the phone. Terminal phase: the CLI's own words (1.0.91), row 2
  * only when Copilot shows it (`offersRule`). Hook phase: row 2 carries `remember` (a rule the host keeps).
  * `ident` is the command's first word.
  */
-export function shellOptions(ident, phase, { offersRule = true, command = null, rulesSupported = true } = {}) {
+export function shellOptions(ident, phase, { offersRule = true, command = null, rulesSupported = true, keysThenTyped = false } = {}) {
   const out = [{ index: 1, label: "Yes" }];
   if (phase === "hook") { if (rulesSupported && command) out.push({ index: 2, label: RULE_LABEL, desc: RULE_NOTE, remember: { key: command, label: command } }); }
   else if (offersRule) out.push({ index: 2, label: `Yes, and don't ask again for ${ident || "this command"} in this repo` });
-  out.push(phase === "hook" ? { index: 3, label: "No, and tell Copilot what to do differently" } : { index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE });
+  if (phase === "hook") out.push({ index: 3, label: NO_TELL_LABEL, desc: TELL_NOTE_HOOK, takesText: true });
+  else if (tellsPastHold(offersRule, keysThenTyped)) out.push({ index: 3, label: NO_TELL_LABEL, desc: TELL_NOTE_TUI, takesText: true });
+  else out.push({ index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE });
   return out;
 }
-/** A non-shell tool: Yes / No — the hook's two answers; at the terminal, row 1 and Esc. */
-export const TOOL_OPTIONS = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, label: "No" }]);
+/** Past the hold a reason is typed only into the measured shape (three rows, No is `3`) on a host that types keys then words. */
+const tellsPastHold = (offersRule, keysThenTyped) => keysThenTyped && offersRule;
+/** A non-shell tool: Yes / No — the hook's two answers (No with a reason); at the terminal, row 1 and Esc. */
+export const TOOL_OPTIONS = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, label: "No", desc: TELL_NOTE_HOOK, takesText: true }]);
 const TOOL_OPTIONS_TUI = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE }]);
 
 const str = (v) => (typeof v === "string" && v.trim() ? v : null);
@@ -199,12 +296,13 @@ function readLines(path, from, max) {
   } finally { closeSync(fd); }
 }
 
-export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now, rulesSupported = true, onAnswered = () => {}, onAbort = () => {} } = {}) {
+export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallWaitMs = TOOLCALL_WAIT_MS, now = Date.now, rulesSupported = true, keysThenTyped = false, askKeysMeasured = ASK_KEYS_MEASURED, screen = () => null, onAnswered = () => {}, onAbort = () => {} } = {}) {
   const homeDir = () => (typeof home === "function" ? home() : home);
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], asks: new Set(), told: 0 });
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], asks: new Set(), told: 0, questions: new Map() });
+  const keysThen = () => (typeof keysThenTyped === "function" ? !!keysThenTyped() : !!keysThenTyped);
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
   const publish = (slot, r) => emit(slot, (w) => w.asked(r.dialog));
@@ -228,12 +326,12 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       id: r.id, kind: "tool",
       get question() { return questionOf(r); },
       get options() { return optionsOf(r); },
-      answer: (choice) => answer(slot, r, choice),
+      answer: (choice, extra) => answer(slot, r, choice, extra),
     };
     return r;
   }
 
-  const optionsOf = (r) => (r.shell ? shellOptions(r.ident, r.phase, { offersRule: r.offersRule, command: r.command, rulesSupported }) : r.phase === "hook" ? TOOL_OPTIONS : TOOL_OPTIONS_TUI);
+  const optionsOf = (r) => (r.shell ? shellOptions(r.ident, r.phase, { offersRule: r.offersRule, command: r.command, rulesSupported, keysThenTyped: keysThen() }) : r.phase === "hook" ? TOOL_OPTIONS : TOOL_OPTIONS_TUI);
 
   /** What `permission.requested` says the terminal dialog is: its `promptRequest`, and whether a shell one has row 2. */
   function setPrompt(r, prompt, pr) {
@@ -244,15 +342,18 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (Array.isArray(prompt.commandIdentifiers) && str(prompt.commandIdentifiers[0])) r.ident = prompt.commandIdentifiers.join(", ");
   }
 
-  async function answer(slot, r, choice) {
+  async function answer(slot, r, choice, extra) {
     if (r.phase === "done") return { ok: false, reason: "that question is no longer open — it was answered or withdrawn" };
-    const allowed = optionsOf(r).map((o) => o.index);
-    if (!allowed.includes(choice)) return { ok: false, reason: `${choice} is not one of this dialog's options` };
+    const opts = optionsOf(r);
+    const option = opts.find((o) => o.index === choice);
+    if (!option) return { ok: false, reason: `${choice} is not one of this dialog's options` };
+    const text = typeof extra?.text === "string" && extra.text.trim() ? extra.text.trim() : null;
+    if (text && !option.takesText) return { ok: false, reason: `“${option.label}” takes no typed reason — tap it without one` };
     if (r.phase === "hook" && r.settle) {
       const settle = r.settle;
       // Choice 2 here is allow; the rule it carries (`remember`) is kept by the HOST, after this
-      // returns, and only because a person tapped it.
-      settle(choice === 3 ? { behavior: "deny", message: DENY_MESSAGE } : { behavior: "allow" });
+      // returns, and only because a person tapped it. A reason on No is the hook's own deny message.
+      settle(choice === 3 ? { behavior: "deny", message: text ?? DENY_MESSAGE } : { behavior: "allow" });
       retire(slot, r);
       try { onAnswered(slot, { choice, command: r.command, phase: "hook" }); } catch { /* the host's fault */ }
       return { ok: true };
@@ -269,6 +370,8 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (front !== r) return { ok: false, reason: "another Copilot dialog is in front of this one in the terminal — answer that one first" };
     // The host types these (answerBox → core.input), once, while this dialog is still open.
     r.typedAt = now();
+    // S3b: `3` opens the No row's field, the reason goes in, a SEPARATE Return sends it.
+    if (text && choice === 3) return { keys: NO_ROW_DIGIT, typed: text, then: "\r" };
     return { keys: DIALOG_KEYS[choice] };
   }
 
@@ -296,6 +399,45 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   }
 
   const findOpen = (slot, pred) => { for (const r of st(slot).open.values()) if (pred(r)) return r; return null; };
+
+  // ── ask_user, as a question ─────────────────────────────────────────────
+  const emitQ = (slot, fn) => { for (const w of slot.questions ?? []) { try { fn(w); } catch { /* the host's fault */ } } };
+
+  function makeQuestion(slot, id, q) {
+    const rec = { id, labels: q.labels, typedAt: null };
+    rec.question = {
+      id, question: q.question, freeText: false,
+      options: q.labels.map((label, k) => ({ index: k + 1, label })),
+      answer: (a) => answerQuestion(slot, rec, a),
+    };
+    return rec;
+  }
+
+  function closeQuestion(slot, id, quiet) {
+    const s = st(slot);
+    if (!s.questions.delete(id)) return;
+    if (!quiet) emitQ(slot, (w) => w.closed(id));
+  }
+  function closeQuestions(slot, quiet) { for (const id of [...st(slot).questions.keys()]) closeQuestion(slot, id, quiet); }
+
+  async function answerQuestion(slot, rec, a) {
+    const s = st(slot);
+    if (!s.questions.has(rec.id)) return { ok: false, reason: "that question is no longer open — it was answered or withdrawn" };
+    if (typeof a?.text === "string") return { ok: false, reason: "Copilot's question form takes one of its options, not typed words — letters typed while it is open land in Copilot's own prompt box as a new prompt (measured on 1.0.91)" };
+    const k = Number.isInteger(a?.choice) ? a.choice - 1 : -1;
+    if (k < 0 || k >= rec.labels.length) return { ok: false, reason: `${a?.choice} is not one of the question's options` };
+    if (!askKeysMeasured) return { ok: false, reason: `pick “${rec.labels[k]}” at the terminal (↑/↓, then Enter): answering Copilot's question form from the phone has not been measured yet, so nothing was pressed` };
+    if (slot.health.state !== "up") return { ok: false, reason: "Copilot's channel is down, so this question cannot be answered from the phone — answer it at the terminal" };
+    if (rec.typedAt != null && now() - rec.typedAt < KEYS_SETTLE_MS) return { ok: false, reason: "already answered from the phone — waiting for Copilot to confirm it" };
+    let rows = null;
+    try { rows = screen(slot.hostId)?.rows(60) ?? null; } catch { rows = null; }
+    const cur = askCursor(rows, rec.labels);
+    if (cur == null) return { ok: false, reason: "Copilot's question form is not on the screen the way it was measured — answer it at the terminal" };
+    const keys = askKeys(cur, k);
+    if (!keys) return { ok: false, reason: `“${rec.labels[k]}” is more than ${ASK_MAX_MOVES} rows from the highlighted one — pick it at the terminal` };
+    rec.typedAt = now();
+    return { keys };
+  }
 
   // ── events.jsonl ────────────────────────────────────────────────────────
 
@@ -347,7 +489,15 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         return;
       }
       case "tool.execution_start": {
-        if (d.toolName === ASK_TOOL && str(d.toolCallId)) { s.asks.add(d.toolCallId); tellAsks(slot); return; }
+        if (d.toolName === ASK_TOOL && str(d.toolCallId)) {
+          const q = askQuestion(d.arguments);
+          if (!q) { s.asks.add(d.toolCallId); tellAsks(slot); return; } // not a form the phone can be shown: waiting on you
+          if (s.questions.has(d.toolCallId)) return;
+          const rec = makeQuestion(slot, d.toolCallId, q);
+          s.questions.set(rec.id, rec);
+          if (!quiet) emitQ(slot, (w) => w.asked(rec.question));
+          return;
+        }
         // A box published under a minted id learns its tool call late (the id it was shown under stays).
         const tcid = str(d.toolCallId), cmd = str(d.arguments?.command);
         if (!tcid || !cmd) return;
@@ -358,12 +508,14 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       case "tool.execution_complete": {
         const tcid = str(d.toolCallId);
         if (tcid && s.asks.delete(tcid)) tellAsks(slot);
+        if (tcid) closeQuestion(slot, tcid, quiet);
         const r = tcid ? findOpen(slot, (x) => x.toolCallId === tcid) : null;
         if (r && r.phase !== "hook") drop(r);
         return;
       }
       case "abort": {
         if (s.asks.size) { s.asks.clear(); tellAsks(slot); }
+        closeQuestions(slot, quiet);
         // Esc at a dialog (or in the composer) aborts the turn, and Copilot then fires NO agentStop
         // (measured: permission.completed "cancelled", assistant.turn_end, abort, usage_checkpoint).
         if (!quiet) { const at = Date.parse(e.timestamp); try { onAbort(slot, Number.isFinite(at) ? at : now()); } catch { /* the host's fault */ } }
@@ -373,6 +525,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         // Copilot exited or (re)started: nothing asked before is still on its screen.
         for (const r of [...s.open.values()]) if (r.phase !== "hook") drop(r);
         if (s.asks.size) { s.asks.clear(); tellAsks(slot); }
+        closeQuestions(slot, quiet);
         return;
       default:
     }
@@ -487,10 +640,36 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   function retireAll(slot) {
     for (const r of [...st(slot).open.values()]) retire(slot, r);
     if (st(slot).asks.size) { st(slot).asks.clear(); tellAsks(slot); }
+    closeQuestions(slot, false);
   }
 
   /** Something says the terminal moved (the `notification{permission_prompt}` hook): read now, not at the next tick. */
   function poke(slot) { readTail(slot); }
+
+  /** The events poll runs while anybody watches this slot's dialogs or questions. */
+  function poll(slot) {
+    const s = st(slot);
+    if (!s.timer) {
+      s.timer = setInterval(() => { try { readTail(slot); } catch { /* next tick */ } }, pollMs);
+      s.timer.unref?.();
+    }
+    return () => { if (!slot.dialogs.size && !(slot.questions?.size) && s.timer) { clearInterval(s.timer); s.timer = null; } };
+  }
+
+  const questions = {
+    watch(ss, on) {
+      const slot = router.slotFor(ss);
+      (slot.questions ??= new Set()).add(on);
+      const stop = poll(slot);
+      return () => { slot.questions.delete(on); stop(); };
+    },
+    async pending(ss) {
+      const slot = router.slotFor(ss);
+      if (slot.health.state !== "up") return null;
+      try { readTail(slot); } catch { return null; }
+      return [...st(slot).questions.values()].map((r) => r.question);
+    },
+  };
 
   const source = {
     watch(ss, on) {
@@ -498,14 +677,8 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       slot.dialogs.add(on);
       const s = st(slot);
       if (s.asks.size) { try { on.unposed?.(s.asks.size); } catch { /* the host's fault */ } }
-      if (!s.timer) {
-        s.timer = setInterval(() => { try { readTail(slot); } catch { /* next tick */ } }, pollMs);
-        s.timer.unref?.();
-      }
-      return () => {
-        slot.dialogs.delete(on);
-        if (!slot.dialogs.size && s.timer) { clearInterval(s.timer); s.timer = null; }
-      };
+      const stop = poll(slot);
+      return () => { slot.dialogs.delete(on); stop(); };
     },
     async pending(ss) {
       const slot = router.slotFor(ss);
@@ -515,5 +688,5 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     },
   };
 
-  return { answerHook, onEvent, readTail, retireAll, poke, source };
+  return { answerHook, onEvent, readTail, retireAll, poke, source, questions };
 }

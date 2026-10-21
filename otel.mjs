@@ -18,7 +18,7 @@
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { createTail } from "./tail.mjs";
+import { follow } from "./jsonl.mjs";
 import { SESSION_ID_RE } from "./paths.mjs";
 
 /** A cheap pre-filter: the exporter's other spans (invoke_agent carries a long attribute list) are never parsed. */
@@ -46,7 +46,8 @@ export function chatOf(span) {
 }
 
 /** A reader over one directory of per-launch span files. */
-export function createOtelReader(dir) {
+/** `tail` is the host's `api.tail`. */
+export function createOtelReader(dir, { tail } = {}) {
   /** path → { tail, chats[] } */
   const files = new Map();
   function refresh() {
@@ -57,12 +58,12 @@ export function createOtelReader(dir) {
       let f = files.get(p);
       if (!f) {
         const chats = [];
-        f = { chats, tail: createTail(p, (o) => { const c = chatOf(o); if (c) chats.push(c); }, { filter: (l) => CHAT_LINE.test(l) }) };
+        f = { chats, tail: follow(tail, p, (o) => { const c = chatOf(o); if (c) chats.push(c); }, { filter: (l) => CHAT_LINE.test(l), onReset: () => { chats.length = 0; } }) };
         files.set(p, f);
       }
-      f.tail.advance(() => { f.chats.length = 0; });
+      f.tail.advance();
     }
-    for (const p of [...files.keys()]) if (!names.includes(p.slice(dir.length + 1))) files.delete(p);
+    for (const p of [...files.keys()]) if (!names.includes(p.slice(dir.length + 1))) { files.get(p).tail.close(); files.delete(p); }
     return true;
   }
   return {

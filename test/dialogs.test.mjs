@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRouter } from "../router.mjs";
+import { createSlots as createRouter } from "../slots.mjs";
 import { createDialogs, DENY_MESSAGE, DIALOG_KEYS, RULE_LABEL, tuiQuestion } from "../dialogs.mjs";
 import { fakeHold } from "./fakeapi.mjs";
 

@@ -28,6 +28,24 @@
  * `--reasoning-effort`), `--plan`, `--allow-tool=write`, `--no-remote`;
  * `--allow-all` and `--continue` are in `--help`. Their EFFECT on a session
  * was not exercised (no prompt was spent on them).
+ *
+ * `--effort` is NOT passed (contract 2.0: an effort ladder is measured, never guessed). The
+ * parser accepting the flag is not a ladder: `session.start` — where Copilot would echo the
+ * effort it runs at — is written lazily, at the first prompt, so the zero-credit spike (S4,
+ * 2026-10-21) could not read it. No knob is offered (`caps.effort` absent), and a launch that
+ * still carries one (an old schedule) starts at Copilot's own default rather than being refused.
+ *
+ * `--model` is passed only when the person picked one: this account is Auto-only (S0–S3:
+ * `--model gpt-4.1` is refused with "not available. Using auto").
+ *
+ * The core's instructions (`req.instructions`, the repo-facing text) reach Copilot as a
+ * custom-instructions DIRECTORY (S1, measured 2026-10-21): `COPILOT_CUSTOM_INSTRUCTIONS_DIRS=<dir>`
+ * with `<dir>/AGENTS.md` is listed by `copilot instruction list` ("Nested AGENTS.md"); a
+ * `--plugin-dir` skill and a `.github/copilot-instructions.md` in that dir are NOT loaded. The
+ * HOST writes the file into this session's own launch dir (`files: session:instructions/AGENTS.md`)
+ * and resolves the `session:instructions` item of the variable to that dir. The variable is a
+ * comma list, so a value the daemon's environment already holds is kept, ours appended. Nothing
+ * is written into the repo or `~/.copilot`.
  */
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, mkdirSync } from "node:fs";
@@ -37,8 +55,6 @@ import { SESSION_ID_RE } from "./paths.mjs";
 /** Always in the spawn env (`spawnEnv`), whatever the launch. */
 export const SPAWN_ENV = Object.freeze({ COPILOT_AUTO_UPDATE: "false" });
 
-export const EFFORT_LADDER = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
-const EFFORTS = new Set(EFFORT_LADDER);
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
 
 /**
@@ -86,7 +102,26 @@ export function binFound(bin) {
  * THROWS a sentence for a launch it cannot express — the host shows it as the
  * refusal, nothing is spawned.
  */
-export function buildLaunch(req, { pluginDir, otelDir, mintId = randomUUID }) {
+/** The variable Copilot reads extra instruction directories from (S1), and our launch-file names. */
+export const INSTRUCTIONS_ENV = "COPILOT_CUSTOM_INSTRUCTIONS_DIRS";
+export const INSTRUCTIONS_DIR = "session:instructions";
+export const INSTRUCTIONS_FILE = `${INSTRUCTIONS_DIR}/AGENTS.md`;
+
+/**
+ * How the core's instructions reach this launch: the file, the variable (the inherited value kept,
+ * ours appended), and what the plan says. Empty instructions ⇒ nothing written, `"none"`.
+ */
+export function instructionsPlan(instructions, inherited = process.env[INSTRUCTIONS_ENV]) {
+  if (typeof instructions !== "string" || !instructions.trim()) return { instructionsVia: "none" };
+  const keep = typeof inherited === "string" ? inherited.split(",").map((s) => s.trim()).filter((s) => s && s !== INSTRUCTIONS_DIR) : [];
+  return {
+    instructionsVia: "env-file",
+    files: [{ path: INSTRUCTIONS_FILE, content: instructions }],
+    env: { [INSTRUCTIONS_ENV]: [...keep, INSTRUCTIONS_DIR].join(",") },
+  };
+}
+
+export function buildLaunch(req, { pluginDir, otelDir, mintId = randomUUID, inheritedEnv = process.env }) {
   const launch = (req && req.launch) || {};
   const mode = req?.resumeMode;
   if (mode === "pick") throw new Error("Copilot has no session picker this app can drive — open a Copilot session by its id instead");
@@ -110,10 +145,6 @@ export function buildLaunch(req, { pluginDir, otelDir, mintId = randomUUID }) {
     if (typeof launch.model !== "string" || !MODEL_RE.test(launch.model)) throw new Error(`"${String(launch.model)}" is not a model name Copilot can be given`);
     args.push("--model", launch.model);
   }
-  if (launch.effort !== undefined) {
-    if (!EFFORTS.has(launch.effort)) throw new Error(`effort "${String(launch.effort)}" is not one of ${[...EFFORTS].join(", ")}`);
-    args.push("--effort", launch.effort);
-  }
   const pm = launch.permissionMode ?? "default";
   const flags = PERMISSION_FLAGS[pm];
   if (!flags) throw new Error(`Copilot has no permission mode like "${pm}"; it offers ${PERMISSION_MODES.join(", ")}`);
@@ -121,9 +152,15 @@ export function buildLaunch(req, { pluginDir, otelDir, mintId = randomUUID }) {
 
   mkdirSync(otelDir, { recursive: true });
   const otelFile = join(otelDir, `${id ?? `continue-${mintId()}`}.jsonl`);
+  const told = instructionsPlan(req?.instructions, inheritedEnv?.[INSTRUCTIONS_ENV]);
   return {
     args,
     ...(id ? { backendSessionId: id } : {}),
-    env: { ...SPAWN_ENV, COPILOT_OTEL_FILE_EXPORTER_PATH: otelFile },
+    env: { ...SPAWN_ENV, COPILOT_OTEL_FILE_EXPORTER_PATH: otelFile, ...(told.env ?? {}) },
+    ...(told.files ? { files: told.files } : {}),
+    instructionsVia: told.instructionsVia,
+    // Copilot has allow/deny flags and no ask (S2): an ask rule holds through the host's answer
+    // gate on the dialogs this plugin poses.
+    askRulesVia: "gate",
   };
 }

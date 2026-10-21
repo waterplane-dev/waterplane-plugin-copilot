@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRouter } from "../router.mjs";
+import { createSlots } from "../slots.mjs";
+import { bindConversation, BIND_CONFIRM_MS } from "./fakeapi.mjs";
+const createRouter = (o = {}) => createSlots({ bind: bindConversation, ...o });
 import { emitTurn, turnEdge, createTurnSource } from "../turns.mjs";
 import { createAttach, noteHook, pollLock } from "../channel.mjs";
 import { liveHolder, logHolder, workspaceCwd } from "../paths.mjs";
@@ -14,7 +16,8 @@ const ID = "2dd08105-5de0-4902-9e93-8d55349bf8e7";
 const ss = (o = {}) => ({ id: "wp-1", cwd: "/tmp/wp0-copilot/repo", spawnedAt: 0, backendSessionId: ID, ...o });
 
 test("turn edges: userPromptSubmitted starts, agentStop ends (once per prompt), sessionStart is ready", () => {
-  assert.deepEqual(turnEdge("userPromptSubmitted", sample("userPromptSubmitted")), { edge: "started", at: 1790885492636 });
+  assert.deepEqual(turnEdge("userPromptSubmitted", sample("userPromptSubmitted")), { edge: "started", at: 1790885492636, prompt: "Use the bash tool to run exactly: touch c0.txt && echo done" }, "the accepted words ride as TurnFacts.prompt");
+  assert.deepEqual(turnEdge("userPromptSubmitted", {}, 7), { edge: "started", at: 7 });
   assert.deepEqual(turnEdge("agentStop", sample("agentStop")), { edge: "ended", at: 1790885497804 });
   assert.equal(turnEdge("sessionStart", sample("sessionStart")).edge, "ready");
   for (const n of ["preToolUse", "postToolUse", "permissionRequest", "notification", "sessionEnd"]) assert.equal(turnEdge(n, sample(n)), null, n);
@@ -49,6 +52,25 @@ test("a --continue slot adopts the first hook from its cwd — only when it is t
   r2.slotFor(ss({ id: "wp-b", backendSessionId: undefined, cwd: dir }));
   r2.slotFor(ss({ id: "wp-c", backendSessionId: undefined, cwd: dir }));
   assert.equal(r2.route({ sessionId: ID, cwd: dir }), null, "two candidates: cannot say, so nobody gets it");
+
+  assert.equal(createSlots().route({ sessionId: ID, cwd: dir }), null, "no host ladder: nothing is adopted, never guessed");
+});
+
+test("two --continue slots in one cwd: the one the host delivered THOSE words to is bound — on a later pass, through the host's ladder", () => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-route-"));
+  let t = 1000;
+  const looks = [];
+  const r = createSlots({ bind: (l) => { looks.push(l); return bindConversation(l); }, now: () => t });
+  const b = r.slotFor(ss({ id: "wp-b", backendSessionId: undefined, cwd: dir }));
+  const c = r.slotFor(ss({ id: "wp-c", backendSessionId: undefined, cwd: dir }));
+  r.noteSent(c, "fix the bug");
+  assert.equal(r.route({ sessionId: ID, cwd: dir, prompt: "fix the bug" }), null, "a sole prompt match is not adopted at the instant it is seen");
+  assert.equal(looks.at(-1).createsRecord, false, "two waiting slots: the structural rung is not entitled");
+  t += BIND_CONFIRM_MS;
+  assert.deepEqual(r.rebind(), [c], "still alone a pass later: adopted");
+  assert.equal(c.id, ID);
+  assert.equal(b.id, null);
+  assert.equal(r.route({ sessionId: ID, cwd: dir }), c);
 });
 
 test("the turn source hands edges to its watchers, and unwatching stops them", () => {

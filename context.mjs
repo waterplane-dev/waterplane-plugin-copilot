@@ -15,7 +15,7 @@
  *      — the one-turn lag this ordering removes. It still counts when it is
  *      newer (a call after the last checkpoint, or no checkpoint at all).
  *
- *   createContextSource({ otelDir, home, idOf? })
+ *   createContextSource({ otelDir, home, idOf?, tail })
  *     → { sample(ss), checkpointSince(id, ms) }
  *
  * `checkpointSince` is what the turn-end gate (turns.mjs) waits on, so the
@@ -27,7 +27,7 @@
  */
 import { createOtelReader } from "./otel.mjs";
 import { eventsPath, SESSION_ID_RE } from "./paths.mjs";
-import { createTail } from "./tail.mjs";
+import { follow } from "./jsonl.mjs";
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 
@@ -47,8 +47,8 @@ export function checkpointSample(e) {
   return { at, usedTok: used, model: typeof m.model === "string" && m.model ? m.model : model };
 }
 
-export function createContextSource({ otelDir, home, idOf } = {}) {
-  const otel = createOtelReader(otelDir);
+export function createContextSource({ otelDir, home, idOf, tail } = {}) {
+  const otel = createOtelReader(otelDir, { tail });
   const homeDir = () => (typeof home === "function" ? home() : home);
   /** Copilot session id → { tail, last, lastTs } over its events.jsonl, checkpoint lines only. */
   const cps = new Map();
@@ -59,15 +59,15 @@ export function createContextSource({ otelDir, home, idOf } = {}) {
     let c = cps.get(id);
     if (!c) {
       c = { last: null, lastTs: -Infinity };
-      c.tail = createTail(eventsPath(h, id), (e) => {
+      c.tail = follow(tail, eventsPath(h, id), (e) => {
         const ts = Date.parse(e?.timestamp);
         if (Number.isFinite(ts) && ts > c.lastTs) c.lastTs = ts;
         const s = checkpointSample(e);
         if (s && (!c.last || s.at >= c.last.at)) c.last = s;
-      }, { filter: (l) => l.includes('"session.usage_checkpoint"') });
+      }, { filter: (l) => l.includes('"session.usage_checkpoint"'), onReset: () => { c.last = null; c.lastTs = -Infinity; } });
       cps.set(id, c);
     }
-    c.tail.advance(() => { c.last = null; c.lastTs = -Infinity; });
+    c.tail.advance();
     return c;
   }
 

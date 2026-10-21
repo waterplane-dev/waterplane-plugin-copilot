@@ -2,7 +2,7 @@
  * What Copilot spent, in its OWN unit (`TokenSource`), served at
  * `GET /api/tokenstats/copilot`.
  *
- *   createLedger({ home, otelDir }) → { ledger(maxAgeMs): Promise<BackendTokensDoc> }
+ *   createLedger({ home, otelDir, tail }) → { ledger(maxAgeMs): Promise<BackendTokensDoc> }
  *
  * Two measured sources, never blended into one number:
  * - `session.usage_checkpoint` in each `events.jsonl` (once per prompt, after
@@ -28,7 +28,7 @@
  */
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { createTail } from "./tail.mjs";
+import { follow } from "./jsonl.mjs";
 import { createOtelReader } from "./otel.mjs";
 import { SESSION_ID_RE } from "./paths.mjs";
 
@@ -51,8 +51,8 @@ export function kindsOf(c) {
   return k;
 }
 
-export function createLedger({ home, otelDir, now = Date.now } = {}) {
-  const otel = createOtelReader(otelDir);
+export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
+  const otel = createOtelReader(otelDir, { tail });
   /** events.jsonl path → { tail, id, checkpoints[] } */
   const sessions = new Map();
   let cached = null;
@@ -69,16 +69,16 @@ export function createLedger({ home, otelDir, now = Date.now } = {}) {
         const checkpoints = [];
         s = {
           id: id.toLowerCase(), checkpoints,
-          tail: createTail(p, (e) => {
+          tail: follow(tail, p, (e) => {
             if (e?.type !== "session.usage_checkpoint") return;
             const at = Date.parse(e.timestamp);
             const nano = e.data?.totalNanoAiu, pr = e.data?.totalPremiumRequests;
             if (Number.isFinite(at)) checkpoints.push({ at, nano: Number.isFinite(nano) && nano >= 0 ? nano : null, pr: Number.isFinite(pr) && pr >= 0 ? pr : null });
-          }, { filter: (l) => l.includes('"session.usage_checkpoint"') }),
+          }, { filter: (l) => l.includes('"session.usage_checkpoint"'), onReset: () => { checkpoints.length = 0; } }),
         };
         sessions.set(p, s);
       }
-      s.tail.advance(() => { s.checkpoints.length = 0; });
+      s.tail.advance();
     }
     return true;
   }

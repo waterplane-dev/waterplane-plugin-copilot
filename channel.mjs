@@ -62,7 +62,12 @@ export function createAttach(router, { home, pollMs = LOCK_POLL_MS, alive } = {}
   return async function attach(ss, onHealth) {
     const slot = router.slotFor(ss);
     slot.healths.add(onHealth);
-    const tick = () => pollLock(router, slot, typeof home === "function" ? home() : home, alive);
+    // An unbound (`--continue`) slot also asks the host's binding ladder again each tick: its
+    // prompt rung adopts only on a LATER pass than the one that first saw the match (slots.mjs).
+    const tick = () => {
+      if (!slot.id) { try { router.rebind?.(); } catch { /* next tick */ } }
+      pollLock(router, slot, typeof home === "function" ? home() : home, alive);
+    };
     tick();
     const timer = setInterval(tick, pollMs);
     timer.unref?.();

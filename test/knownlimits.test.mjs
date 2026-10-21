@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRouter } from "../router.mjs";
+import { createSlots as createRouter } from "../slots.mjs";
 import { createDialogs, NO_STOP_LABEL } from "../dialogs.mjs";
 import { checkpointSample } from "../context.mjs";
 import { fakeHold } from "./fakeapi.mjs";

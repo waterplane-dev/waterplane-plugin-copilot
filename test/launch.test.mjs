@@ -48,11 +48,13 @@ test("pick and fork are refused in words, and a non-uuid id is never used", () =
   assert.throws(() => buildLaunch({ launch: {}, hookPort: 1, resumeSessionId: "../../etc" }, dirs()), /not a Copilot session id/);
 });
 
-test("model and effort ride as flags; garbage is refused", () => {
+test("a picked model rides as a flag; effort is never passed (no measured ladder); garbage is refused", () => {
   const p = buildLaunch({ launch: { model: "gpt-5-mini", effort: "high" }, hookPort: 1 }, { ...dirs(), mintId: mint });
-  assert.deepEqual(p.args.slice(-4), ["--model", "gpt-5-mini", "--effort", "high"]);
+  assert.deepEqual(p.args.slice(-2), ["--model", "gpt-5-mini"]);
+  assert.ok(!p.args.includes("--effort"));
+  assert.ok(!buildLaunch({ launch: {}, hookPort: 1 }, { ...dirs(), mintId: mint }).args.includes("--model"), "no pick: Auto, no --model (the account is Auto-only)");
   assert.throws(() => buildLaunch({ launch: { model: "a b; rm" }, hookPort: 1 }, dirs()), /model/);
-  assert.throws(() => buildLaunch({ launch: { effort: "ultra" }, hookPort: 1 }, dirs()), /effort/);
+
 });
 
 test("permission modes map to Copilot's own flags; one it lacks is refused, never approximated", () => {

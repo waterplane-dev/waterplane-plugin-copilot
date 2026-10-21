@@ -4,22 +4,25 @@
  * `activate(api)`:
  *   1. writes the `--plugin-dir` hooks plugin into `api.dataDir` (hooks.mjs),
  *      every hook POSTing to `api.hookSink()`;
- *   2. `api.onHook` — routes each post to a host session (router.mjs), turns
- *      it into turn edges (turns.mjs) and channel health (channel.mjs), and
- *      HOLDS `permissionRequest` for a tap through dialogs.mjs (past the hold
- *      the core answers `{}` and Copilot shows its own dialog);
- *   3. `api.backend` — the descriptor: binary, argv (launch.mjs), delivery
- *      literals (delivery.mjs), caps, and the sources that exist so far.
+ *   2. `api.onHook` — routes each post to a host session (slots.mjs, binding
+ *      a `--continue` launch through `api.bindConversation`), turns it into
+ *      turn edges (turns.mjs) and channel health (channel.mjs), and HOLDS
+ *      `permissionRequest` for a tap through dialogs.mjs (past the hold the
+ *      core answers `{}` and Copilot shows its own dialog);
+ *   3. `api.backend` — the descriptor (plugin contract 2.0): binary, the async
+ *      launch plan (launch.mjs: argv, the instructions file, ask rules by the
+ *      host's gate), delivery literals (delivery.mjs), caps, `facts`, and the
+ *      sources. Every JSONL log is read through `api.tail` (jsonl.mjs).
  *
  * Every number and literal here is measured on Copilot 1.0.91 or says it is not.
  */
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { binFound, buildLaunch, EFFORT_LADDER, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
+import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
 import { hookTimeoutSec, parseHookPost, writePluginDir } from "./hooks.mjs";
 import { DELIVERY } from "./delivery.mjs";
-import { createRouter } from "./router.mjs";
+import { createSlots } from "./slots.mjs";
 import { createEndGate, createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, RULE_LABEL } from "./dialogs.mjs";
@@ -30,13 +33,6 @@ import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
 
 const execFileP = promisify(execFile);
-
-/**
- * `settledPlan` of the contract (`@waterplane/shared`), spelled locally: a plugin repo has no
- * node_modules to import it from, and the marker is the registered symbol `pluginapi.settledPlan`.
- * TRANSITIONAL: gone when the host awaits `prepare` (a plugin then returns any promise).
- */
-export const settledPlan = (plan) => Object.assign(Promise.resolve(plan), { [Symbol.for("pluginapi.settledPlan")]: plan });
 
 export const BACKEND_ID = "copilot";
 export const HOLD_DEFAULT_MS = 8000;
@@ -50,12 +46,13 @@ export function holdMsOf(values) {
 /**
  * The binary's caps (contract 2.0: facts about the BINARY only; which reader answers what is `FACTS`).
  * - slash "none", remoteControl false (design §6).
- * - effort: `--effort` (CLI help: alias of `--reasoning-effort`); the ladder is launch.mjs's EFFORTS.
+ * - effort ABSENT: the parser accepts `--effort`, but no ladder was measured (S4: `session.start`,
+ *   which would echo it, is written only at a first prompt). Absent = no knob, never a guess.
+ * - permissionModes: launch.mjs's flags (parser-accepted on 1.0.91).
  */
 export const CAPS = Object.freeze({
   turns: true,
   slash: "none",
-  effort: Object.freeze([...EFFORT_LADDER]),
   permissionModes: PERMISSION_MODES,
   remoteControl: false,
 });
@@ -66,11 +63,15 @@ export const CAPS = Object.freeze({
  *   so none is named (dialogs while the channel is down: the phone says to answer at the terminal).
  * - transcript: the events.jsonl fold; context: OTel (the footer shows AI credits, never the context,
  *   the window stays absent); tokens: the OTel ledger; delivery: the events.jsonl proof.
- * - no limits/usage/questions/plan/agents: none was measured, so they are ABSENT.
+ * - questions: `ask_user` off events.jsonl (S3) — posed with its choices; see dialogs.mjs for
+ *   what a phone may answer.
+ * - no limits/usage/plan/agents/conversations: none was measured (or the host slot has not landed:
+ *   `usage`), so they are ABSENT.
  */
 export const FACTS = Object.freeze({
   turns: Object.freeze([Object.freeze({ source: true })]),
   dialogs: Object.freeze([Object.freeze({ source: true })]),
+  questions: Object.freeze([Object.freeze({ source: true })]),
   delivery: Object.freeze([Object.freeze({ source: true })]),
   transcript: Object.freeze([Object.freeze({ source: true })]),
   context: Object.freeze([Object.freeze({ source: true })]),
@@ -87,6 +88,12 @@ export async function copilotVersion(bin) {
 
 /** The session action that drops this session's allow rules (manifest `actions`). */
 export const FORGET_ACTION = "forget-allow-rules";
+
+/**
+ * Does this host type a dialog's answer as keys THEN words (`{keys, typed, then}`) — the measured
+ * "No, and tell Copilot…" past the hold (S3b)? Proposed host feature flag; absent ⇒ No stays Esc.
+ */
+export const supportsKeysThenTyped = (api) => api?.supports?.dialogKeysThenTyped === true;
 
 /** Does this host keep standing rules (its answer gate's `ruleAllows`)? An older host does not. */
 export const supportsRules = (api) => typeof api?.ruleAllows === "function" && typeof api?.rules === "function" && typeof api?.forgetRules === "function";
@@ -150,6 +157,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
 
 /** The backend definition handed to `api.backend`. Exported for tests. */
 export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null }) {
+  const tail = (p, on, o) => api.tail(p, on, o);
   const env = (k) => api.env(k);
   const attach = createAttach(router, { home: () => copilotHome(env) });
   // A --continue session learns its Copilot id from its first hook, so the id comes off the slot.
@@ -160,12 +168,10 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     label: "GitHub Copilot",
     bin: () => resolveBin(env),
     spawnEnv: SPAWN_ENV,
-    // Synchronous on purpose: a refused mode THROWS its sentence, and the plan is already decided
-    // (`settledPlan`, which the host reads at once until its create() awaits prepare).
-    prepare(req) {
+    // A refused mode THROWS its sentence (the host shows it; nothing is spawned).
+    async prepare(req) {
       refreshHooks(); // the sink's port is today's; a hooks.json from an older run would post nowhere
-      // instructionsVia/askRulesVia "none": this launch passes neither on (WP6 may); stated, not implied.
-      return settledPlan({ ...buildLaunch(req, { pluginDir, otelDir }), instructionsVia: "none", askRulesVia: "none" });
+      return buildLaunch(req, { pluginDir, otelDir });
     },
     delivery: DELIVERY,
     caps: CAPS,
@@ -177,10 +183,11 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     sources: {
       turns: createTurnSource(router),
       dialogs: dialogs.source,
-      transcript: createTranscriptSource({ home, idOf }),
-      delivery: createDeliverySource({ home, idOf }),
-      tokens: createLedger({ home, otelDir }),
-      context: context ?? createContextSource({ otelDir, home, idOf }),
+      questions: dialogs.questions,
+      transcript: createTranscriptSource({ home, idOf, tail }),
+      delivery: createDeliverySource({ home, idOf, tail, onSend: (ss, text) => router.noteSent(router.peek(ss.id), text) }),
+      tokens: createLedger({ home, otelDir, tail }),
+      context: context ?? createContextSource({ otelDir, home, idOf, tail }),
       attach,
     },
   };
@@ -193,7 +200,7 @@ export function activate(api) {
   const refreshHooks = () => writePluginDir(pluginDir, { node: process.execPath, sink: api.hookSink(), holdMs });
   refreshHooks();
 
-  const router = createRouter();
+  const router = createSlots({ bind: (look) => api.bindConversation(look) });
   // Past the hold a dialog's answer() resolves to `{ keys }` and the host's
   // answerBox types them (WP3c) — the plugin never types into a session.
   // Option 2 during the hold makes a rule the HOST keeps (its answer gate); every change to one
@@ -205,12 +212,14 @@ export function activate(api) {
   const rulesOn = supportsRules(api);
   const dialogs = createDialogs({
     router, home: () => copilotHome((k) => api.env(k)), rulesSupported: rulesOn,
+    keysThenTyped: () => supportsKeysThenTyped(api), screen: (sid) => api.screen(sid),
     onAnswered: (slot, a) => { if (a.choice === 2 && a.phase === "hook") setImmediate(() => showRules(api, slot)); },
     onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; endGate.edge(slot, { edge: "ended", at }); },
   });
   const context = createContextSource({
     otelDir: join(api.dataDir, "otel"), home: () => copilotHome((k) => api.env(k)),
     idOf: (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined,
+    tail: (p, on, o) => api.tail(p, on, o),
   });
   // The turn's end waits (≤ END_WAIT_MS) for its usage checkpoint, so the host's turn-end
   // context read is this turn's prompt, not the last one's.

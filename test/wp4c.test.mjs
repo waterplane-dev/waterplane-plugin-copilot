@@ -1,5 +1,6 @@
 /** WP4c: the events.jsonl fold, the delivery proof, the AI-credit ledger and the context sample — all off the 1.0.91 fixtures. */
 import { test } from "node:test";
+import { fakeTail } from "./fakeapi.mjs";
 import assert from "node:assert/strict";
 import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ function world({ events = true, otel = true, launched = true } = {}) {
 test("fold: one turn per interactionId, tool call and result folded in, model.* noise ignored", () => {
   const w = world();
   try {
-    const doc = createTranscriptSource({ home: w.home }).read(ss, "full");
+    const doc = createTranscriptSource({ tail: fakeTail, home: w.home }).read(ss, "full");
     assert.equal(doc.turns.length, 3, "three prompts in the fixture");
     const [t1, , t3] = doc.turns;
     assert.equal(t1.n, 1);
@@ -55,7 +56,7 @@ test("fold: one turn per interactionId, tool call and result folded in, model.* 
 test("fold: a lite document withholds input and result but says a result came back", () => {
   const w = world();
   try {
-    const tool = createTranscriptSource({ home: w.home }).read(ss, "lite").turns[0].blocks.find((b) => b.kind === "tool");
+    const tool = createTranscriptSource({ tail: fakeTail, home: w.home }).read(ss, "lite").turns[0].blocks.find((b) => b.kind === "tool");
     assert.equal(tool.omitted, true);
     assert.equal(tool.ok, true);
     assert.equal(tool.input, undefined);
@@ -84,7 +85,7 @@ test("fold: unknown event types, torn lines and odd shapes are ignored, never th
 test("fold: no session id, or no log yet, is null — the host falls back to its history", () => {
   const w = world({ events: false });
   try {
-    const src = createTranscriptSource({ home: w.home });
+    const src = createTranscriptSource({ tail: fakeTail, home: w.home });
     assert.equal(src.read(ss, "lite"), null);
     assert.equal(src.updatedAt(ss), null);
     assert.equal(src.read({ ...ss, backendSessionId: undefined }, "lite"), null);
@@ -95,7 +96,7 @@ test("fold: no session id, or no log yet, is null — the host falls back to its
 test("incremental read: only appended bytes are parsed, a half-written line waits, a truncated file starts over", () => {
   const w = world({ otel: false });
   try {
-    const src = createTranscriptSource({ home: w.home });
+    const src = createTranscriptSource({ tail: fakeTail, home: w.home });
     assert.equal(src.read(ss, "lite").turns.length, 3);
     const line = JSON.stringify({ type: "user.message", timestamp: "2026-10-01T21:00:00.000Z", data: { content: "fourth", interactionId: "i4", messageId: "m4" } });
     appendFileSync(w.eventsFile, line.slice(0, 40)); // torn
@@ -113,7 +114,7 @@ test("incremental read: only appended bytes are parsed, a half-written line wait
 test("delivery: landed matches the whole string after `since`; userTurns lists them; absent is null", async () => {
   const w = world({ otel: false });
   try {
-    const d = createDeliverySource({ home: w.home, pollMs: 10 });
+    const d = createDeliverySource({ tail: fakeTail, home: w.home, pollMs: 10 });
     const all = await d.userTurns(ss, 0);
     assert.equal(all.length, 3);
     assert.deepEqual(Object.keys(all[0]).sort(), ["at", "id", "text"]);
@@ -135,7 +136,7 @@ test("delivery: landed matches the whole string after `since`; userTurns lists t
 test("ledger: AI credits from the checkpoints in their own unit, tokens per model from the chat spans beside it", async () => {
   const w = world();
   try {
-    const doc = await createLedger({ home: w.home, otelDir: w.otelDir }).ledger(0);
+    const doc = await createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir }).ledger(0);
     assert.equal(doc.available, true);
     assert.equal(doc.unit.name, "AI credits");
     const credits = Object.values(doc.unit.perDay).reduce((a, b) => a + b, 0);
@@ -156,7 +157,7 @@ test("ledger: AI credits from the checkpoints in their own unit, tokens per mode
 test("ledger: credits without any OTel file keep kinds empty — credits are not tokens", async () => {
   const w = world({ otel: false });
   try {
-    const doc = await createLedger({ home: w.home, otelDir: w.otelDir }).ledger(0);
+    const doc = await createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir }).ledger(0);
     assert.equal(doc.available, true);
     assert.deepEqual(doc.totals.kinds, {});
     assert.deepEqual(doc.models, []);
@@ -172,14 +173,14 @@ test("ledger: credits and tokens are ONE population — a session this plugin di
     mkdirSync(join(w.home, "session-state", OTHER), { recursive: true });
     writeFileSync(join(w.home, "session-state", OTHER, "events.jsonl"),
       JSON.stringify({ type: "session.usage_checkpoint", timestamp: "2026-10-01T10:00:00Z", data: { totalNanoAiu: 50e9 } }) + "\n"); // a plain-terminal session: 50 AIC
-    const doc = await createLedger({ home: w.home, otelDir: w.otelDir }).ledger(0);
+    const doc = await createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir }).ledger(0);
     const credits = Object.values(doc.unit.perDay).reduce((a, b) => a + b, 0);
     assert.ok(Math.abs(credits - 0.547832) < 1e-9, `the foreign 50 AIC is not counted, got ${credits}`);
     assert.equal(doc.sessions, 1);
     // and with only foreign sessions on disk there is nothing of ours to report
     const lone = world({ otel: false, launched: false });
     try {
-      const d2 = await createLedger({ home: lone.home, otelDir: lone.otelDir }).ledger(0);
+      const d2 = await createLedger({ tail: fakeTail, home: lone.home, otelDir: lone.otelDir }).ledger(0);
       assert.equal(d2.available, false);
     } finally { lone.done(); }
   } finally { w.done(); }
@@ -194,7 +195,7 @@ test("ledger: legacy billing (no nano total) is premium requests, a restarted co
     writeFileSync(join(dir, "events.jsonl"), [cp("2026-10-01T10:00:00Z", 1), cp("2026-10-01T10:05:00Z", 3), cp("2026-10-01T10:06:00Z", 1)].join("\n") + "\n");
     mkdirSync(join(home, "otel"));
     writeFileSync(join(home, "otel", `${ID}.jsonl`), "");
-    const doc = await createLedger({ home, otelDir: join(home, "otel") }).ledger(0);
+    const doc = await createLedger({ tail: fakeTail, home, otelDir: join(home, "otel") }).ledger(0);
     assert.equal(doc.unit.name, "premium requests");
     assert.equal(Object.values(doc.unit.perDay).reduce((a, b) => a + b, 0), 4, "1 + 2 + (restart ⇒ 1)");
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -203,13 +204,13 @@ test("ledger: legacy billing (no nano total) is premium requests, a restarted co
 test("ledger: nothing on disk is available:false with a sentence, never zeros", async () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-wp4c-"));
   try {
-    const missing = await createLedger({ home, otelDir: join(home, "otel") }).ledger(0);
+    const missing = await createLedger({ tail: fakeTail, home, otelDir: join(home, "otel") }).ledger(0);
     assert.equal(missing.available, false);
     assert.match(missing.reason, /no Copilot state/);
     mkdirSync(join(home, "session-state", ID), { recursive: true });
     mkdirSync(join(home, "otel"));
     writeFileSync(join(home, "otel", "x.jsonl"), "not json\n");
-    const empty = await createLedger({ home, otelDir: join(home, "otel") }).ledger(0);
+    const empty = await createLedger({ tail: fakeTail, home, otelDir: join(home, "otel") }).ledger(0);
     assert.equal(empty.available, false);
     assert.match(empty.reason, /no usage yet/);
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -218,7 +219,7 @@ test("ledger: nothing on disk is available:false with a sentence, never zeros", 
 test("ledger: a fresh read is cached for maxAge and re-read at 0", async () => {
   const w = world({ otel: false });
   try {
-    const l = createLedger({ home: w.home, otelDir: w.otelDir });
+    const l = createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir });
     const a = await l.ledger(0);
     appendFileSync(w.eventsFile, JSON.stringify({ type: "session.usage_checkpoint", timestamp: "2026-10-02T10:00:00Z", data: { totalNanoAiu: 9e9 } }) + "\n");
     assert.equal(await l.ledger(60_000), a);
@@ -235,7 +236,7 @@ test("kindsOf: the cache fields are never subtracted into a negative", () => {
 test("context: the newest chat span's whole prompt is the fill; the window is not claimed", () => {
   const w = world({ events: false });
   try {
-    const src = createContextSource({ otelDir: w.otelDir });
+    const src = createContextSource({ tail: fakeTail, otelDir: w.otelDir });
     const s = src.sample(ss);
     assert.equal(s.usedTok, 15533, "mai-code-1.1-flash ended last");
     assert.equal(s.model, "mai-code-1.1-flash");
@@ -243,7 +244,7 @@ test("context: the newest chat span's whole prompt is the fill; the window is no
     assert.equal("window" in s || "totalTok" in s, false);
     assert.equal(src.sample({ ...ss, backendSessionId: "6e03459d-0000-4000-8000-000000000000" }), null, "another session has no sample");
     assert.equal(src.sample({ ...ss, backendSessionId: undefined }), null);
-    assert.equal(createContextSource({ otelDir: join(w.home, "missing") }).sample(ss), null);
+    assert.equal(createContextSource({ tail: fakeTail, otelDir: join(w.home, "missing") }).sample(ss), null);
     // grows with the file
     const next = JSON.parse(readFileSync(OTEL, "utf8").trim().split("\n")[5]);
     next.endTime = [1790885600, 0]; next.attributes["gen_ai.usage.input_tokens"] = 20000;
@@ -257,7 +258,7 @@ test("a --continue session's id comes through idOf (the router slot)", () => {
   try {
     const bare = { ...ss, backendSessionId: undefined };
     const idOf = () => ID;
-    assert.equal(createTranscriptSource({ home: w.home, idOf }).read(bare, "lite").turns.length, 3);
-    assert.equal(createContextSource({ otelDir: w.otelDir, idOf }).sample(bare).usedTok, 15533);
+    assert.equal(createTranscriptSource({ tail: fakeTail, home: w.home, idOf }).read(bare, "lite").turns.length, 3);
+    assert.equal(createContextSource({ tail: fakeTail, otelDir: w.otelDir, idOf }).sample(bare).usedTok, 15533);
   } finally { w.done(); }
 });
