@@ -313,7 +313,7 @@ async function s3() {
   try {
     if (!(await booted(t))) return absent("S3", "the TUI never showed a composer within 60 s", saveRaw("s3-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1000);
-    t.write("Use ask_user to ask me which colour I prefer, then say it back.\r");
+    t.write("Use ask_user to ask me which colour I prefer, then say it back."); await sleep(600); t.write("\r");
     const askRe = /ask_user|elicitation/i;
     const dialogShown = await t.until(() => /which colou?r|colou?r.*prefer/i.test(t.screen()) && t.events().some((e) => askRe.test(JSON.stringify(e))) || t.events().some((e) => /elicitation/i.test(JSON.stringify(e))), 90000);
     const before = t.events(), shotDialog = t.screen();
@@ -337,7 +337,7 @@ async function s3b() {
   try {
     if (!(await booted(t))) return absent("S3b", "the TUI never showed a composer within 60 s", saveRaw("s3b-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1000);
-    t.write("Run the shell command: touch spike-s3b.txt\r");
+    t.write("Run the shell command: touch spike-s3b.txt"); await sleep(600); t.write("\r");
     // no hook plugin => no phone hold: the TUI's own permission dialog is "past the hold" from the start
     const dialog = await t.until(() => /(No|Deny).*(tell|suggest)|3\.\s|Yes, and|Do you want|allow.*touch/i.test(t.screen()), 90000);
     const shot = t.screen();
