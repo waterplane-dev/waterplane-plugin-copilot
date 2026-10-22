@@ -31,8 +31,8 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | ask rules | native | `gate` (the host's answer gate) | Copilot has allow/deny flags, no ask (S2) |
 | context | meter + log | tokens from the usage checkpoint / OTel span; no window | `session/new` names no window (S0) |
 | transcript, delivery, tokens | log | `events.jsonl` + OTel | — |
-| effort | ladder | absent | parser accepts `--effort`, no ladder echoed at 0 credits (S4) |
-| plan | planbox | absent | plan is an ACP session mode; nothing read off it (S4) |
+| effort | ladder | absent | the flag is `--reasoning-effort`; ignored under Auto (this account); readable per turn from `user.message.responsesReasoning.effort` (S4b) |
+| plan | planbox | absent | settable by `--plan`/`--mode` or Shift+Tab; readable from the footer and `session.mode_changed` (S4b) |
 | usage | `/usage` | absent here | the in-repo `copilot-usage` extension already registers source `copilot` (backend `copilot`) from the same account; a second source would count it twice |
 | limits | `limit.ts` | absent | no stated CLI wall signal measured |
 | agents, conversations, fork | store | absent | no measured list; no fork flag (S5) |
@@ -70,7 +70,7 @@ during the hold (see below).
 
 - **Launch.** `copilot --session-id=<uuid> --plugin-dir <generated dir> [--model m]
   [permission flags]` (`--model` only when the person picked one — this account is Auto-only;
-  `--effort` never: no measured ladder), with `COPILOT_AUTO_UPDATE=false` always (an update prompt would swallow typed
+  `--reasoning-effort` never: ignored under Auto), with `COPILOT_AUTO_UPDATE=false` always (an update prompt would swallow typed
   words) and `COPILOT_OTEL_FILE_EXPORTER_PATH` pointing at a per-launch file in the plugin's own data
   dir. The id is minted by the plugin, so the session knows its Copilot id from the first second.
   Re-opening a known session uses `--session-id` too (measured: it resumes with history, where
@@ -156,7 +156,7 @@ during the hold (see below).
 | A turn aborted while nobody watches | its end comes from the `abort` line, which is read while a phone watches the session; otherwise the host's own fallback ends it |
 | Model list | the binary's own, per account: `copilot --acp --stdio` → `session/new` → `models.availableModels` (models.mjs), asked once per host boot; the throwaway session is closed and its dir removed. `auto` is an alias, every id hosted. Any failure ⇒ empty ⇒ the free-text field |
 | `--no-remote` | exists on 1.0.91 but not passed: remote control is off by default (`remoteSteerable: false`) and no config key turns it on |
-| `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised. `--effort` too, and is not passed |
+| `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised. `--reasoning-effort` too (S4b: ignored under Auto), and is not passed |
 
 ## Measured on 1.0.91
 
