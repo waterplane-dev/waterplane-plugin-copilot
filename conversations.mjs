@@ -97,7 +97,7 @@ export async function listConversations(home, cwd, { limit = LIST_LIMIT } = {}) 
 /**
  * Delete one session dir, or refuse in words. Refused: a malformed id; a dir that is not strictly
  * inside `<home>/session-state` once symlinks are resolved (or is itself a symlink); a different
- * cwd; a Mission Control (server-backed) session; one a Copilot process holds (lock or process log);
+ * cwd; a session synced to GitHub (mc_task_id / mc_session_id); one a Copilot process holds (lock or process log);
  * one this host has routed to a live session (`held`). Deletes THAT ONE DIR only.
  */
 export async function removeConversation(home, cwd, id, { alive, held = () => false } = {}) {
@@ -112,7 +112,7 @@ export async function removeConversation(home, cwd, id, { alive, held = () => fa
   const d = await describe(realDir);
   const want = await real(cwd);
   if (!d.cwd || !want || (await real(d.cwd)) !== want) return { ok: false, reason: "that conversation belongs to a different folder" };
-  if (d.remote) return { ok: false, reason: "that conversation is backed by a GitHub server session; delete it in Copilot itself" };
+  if (d.remote) return { ok: false, reason: "that conversation is synced to GitHub; delete it in Copilot, which removes the synced copy too" };
   const lid = id.toLowerCase();
   if (held(lid)) return { ok: false, reason: "that conversation is open in a session on this host — close it first" };
   const holderArgs = alive ? [alive] : [];

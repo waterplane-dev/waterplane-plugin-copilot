@@ -93,7 +93,7 @@ test("list: no workspace.yaml falls back to session.start's cwd; the cap holds; 
   assert.equal((await listConversations(w.home, w.repo, { limit: 1 })).length, 1);
 });
 
-test("remove: refuses a bad id, a symlink out, a different cwd, a server-backed session, a live holder, a held id", async () => {
+test("remove: refuses a bad id, a symlink out, a different cwd, a GitHub-synced session, a live holder, a held id", async () => {
   const w = world();
   const keep = session(w.home, A, { cwd: w.repo });
   assert.equal((await removeConversation(w.home, w.repo, "../x")).ok, false);
@@ -119,7 +119,7 @@ test("remove: refuses a bad id, a symlink out, a different cwd, a server-backed 
   assert.match(r2.reason, /different folder/);
 
   session(w.home, C, { cwd: w.repo, extra: "mc_task_id: 123\n" });
-  assert.match((await removeConversation(w.home, w.repo, C)).reason, /GitHub server/);
+  assert.match((await removeConversation(w.home, w.repo, C)).reason, /synced to GitHub/);
 
   writeFileSync(join(keep, "inuse.4242.lock"), "4242");
   const r3 = await removeConversation(w.home, w.repo, A, { alive: (pid) => pid === 4242 });
