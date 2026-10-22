@@ -31,6 +31,7 @@ import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
+import { createConversationSource } from "./conversations.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -65,8 +66,10 @@ export const CAPS = Object.freeze({
  *   the window stays absent); tokens: the OTel ledger; delivery: the events.jsonl proof.
  * - questions: `ask_user` off events.jsonl (S3) — posed with its choices; see dialogs.mjs for
  *   what a phone may answer.
- * - no limits/usage/plan/agents/conversations: none was measured (or the host slot has not landed:
- *   `usage`), so they are ABSENT.
+ * - conversations: `<home>/session-state` (conversations.mjs) — every Copilot session for the cwd,
+ *   plain-terminal ones included; `remove` deletes that one dir, as Copilot's own delete does.
+ * - no limits/usage/plan/agents: none was measured (or the host slot has not landed: `usage`), so
+ *   they are ABSENT. No fork flag was measured, so `conversations.fork` stays absent too.
  */
 export const FACTS = Object.freeze({
   turns: Object.freeze([Object.freeze({ source: true })]),
@@ -76,6 +79,7 @@ export const FACTS = Object.freeze({
   transcript: Object.freeze([Object.freeze({ source: true })]),
   context: Object.freeze([Object.freeze({ source: true })]),
   tokens: Object.freeze([Object.freeze({ source: true })]),
+  conversations: Object.freeze([Object.freeze({ source: true })]),
 });
 
 /** `copilot --version` ("GitHub Copilot CLI 1.0.91.") as "1.0.91", or null when it cannot be asked. */
@@ -188,6 +192,8 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
       delivery: createDeliverySource({ home, idOf, tail, onSend: (ss, text) => router.noteSent(router.peek(ss.id), text) }),
       tokens: createLedger({ home, otelDir, tail }),
       context: context ?? createContextSource({ otelDir, home, idOf, tail }),
+      // A Copilot id this host has routed to one of its sessions is never deleted from here.
+      conversations: createConversationSource({ home, held: (id) => router._byId?.has(String(id).toLowerCase()) === true }),
       attach,
     },
   };
