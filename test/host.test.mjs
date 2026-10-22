@@ -44,9 +44,9 @@ test("activate registers exactly the backend the manifest declares, and writes t
   assert.equal(typeof def.sources.turns.watch, "function");
   assert.equal(typeof def.sources.dialogs.watch, "function", "the dialog source is what gives the phone boxes");
   assert.equal(typeof def.sources.dialogs.pending, "function");
-  assert.deepEqual(def.facts, { turns: [{ source: true }], dialogs: [{ source: true }], questions: [{ source: true }], delivery: [{ source: true }], transcript: [{ source: true }], context: [{ source: true }], tokens: [{ source: true }] });
-  for (const k of ["usage", "limits", "plan", "agents", "conversations"]) assert.ok(!(k in def.facts), `${k} is ABSENT (unmeasured, or another source owns it)`);
-  for (const k of ["transcript", "delivery", "tokens", "context", "questions"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
+  assert.deepEqual(def.facts, { turns: [{ source: true }], dialogs: [{ source: true }], questions: [{ source: true }], delivery: [{ source: true }], transcript: [{ source: true }], context: [{ source: true }], tokens: [{ source: true }], conversations: [{ source: true }] });
+  for (const k of ["usage", "limits", "plan", "agents"]) assert.ok(!(k in def.facts), `${k} is ABSENT (unmeasured, or another source owns it)`);
+  for (const k of ["transcript", "delivery", "tokens", "context", "questions", "conversations"]) assert.equal(typeof def.sources[k], "object", `sources.${k} is registered`);
   assert.equal(def.caps.effort, undefined, "no measured effort ladder: no knob");
   for (const f of ["router.mjs", "tail.mjs"]) assert.ok(!existsSync(join(REPO, f)), `${f} is gone: the host's toolkit does it (bindConversation, tail)`);
   assert.equal(api._hook.opts.maxHoldMs, 8000);

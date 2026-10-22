@@ -42,14 +42,27 @@ export function liveHolder(dir, alive = pidAlive) {
   return null;
 }
 
-/** `workspace.yaml`'s `cwd:` line, or null. Flat `key: value` lines only — that is all the file holds. */
-export function workspaceCwd(dir) {
+/**
+ * `workspace.yaml` as `{ key: value }`, or null when absent/unreadable. Flat `key: value` lines only —
+ * that is all the file holds (measured on 1.0.91 over 400 dirs: id, cwd, git_root, branch,
+ * client_name, name, user_named, summary_count, fork_count, created_at, updated_at, and on a
+ * Mission Control session host_type, repository, remote_steerable, mc_task_id, mc_session_id,
+ * mc_last_event_id).
+ */
+export function workspaceFields(dir) {
   const p = join(dir, "workspace.yaml");
   if (!existsSync(p)) return null;
-  try {
-    const m = /^cwd:\s*(.+)$/m.exec(readFileSync(p, "utf8"));
-    return m ? m[1].trim().replace(/^["']|["']$/g, "") : null;
-  } catch { return null; }
+  let text;
+  try { text = readFileSync(p, "utf8"); } catch { return null; }
+  const out = {};
+  for (const m of text.matchAll(/^([a-z_]+):[ \t]*(.*)$/gm)) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
+  return out;
+}
+
+/** `workspace.yaml`'s `cwd:` line, or null. */
+export function workspaceCwd(dir) {
+  const v = workspaceFields(dir)?.cwd;
+  return v ? v : null;
 }
 
 /**

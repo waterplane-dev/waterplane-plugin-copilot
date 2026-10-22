@@ -35,7 +35,16 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | plan | planbox | absent | settable by `--plan`/`--mode` or Shift+Tab; readable from the footer and `session.mode_changed` (S4b) |
 | usage | `/usage` | absent here | the in-repo `copilot-usage` extension already registers source `copilot` (backend `copilot`) from the same account; a second source would count it twice |
 | limits | `limit.ts` | absent | no stated CLI wall signal measured |
-| agents, conversations, fork | store | absent | no measured list; no fork flag (S5) |
+| conversations | store | source: list + remove (`conversations.mjs`). List: every `<home>/session-state/<uuid>/` whose `workspace.yaml` `cwd` (or `session.start`'s) is the repo (realpath), once it has an `events.jsonl` — **every Copilot session for that folder, plain-terminal ones included**, each resumable with `--session-id`; title = `workspace.yaml` `name`, first prompt off the log's first 64 KiB, newest first, capped at 200. Remove: that one dir, refused in words for a bad id, a dir outside `session-state` once symlinks resolve, another folder, a synced to GitHub (`mc_task_id`/`mc_session_id`; Copilot's own delete also removes the synced copy) session, one a Copilot process holds (lock or process log) or one this host has open | delete safety below |
+| agents, fork | store | absent | no measured list; no fork flag (S5) |
+
+**Conversation delete safety (measured on 1.0.91, `~/.copilot`, 400 session dirs).** Copilot's own
+delete (the sessions dialog, `sessionsApi.delete`) removes exactly the session directory; `session-store.db`
+(its search index) is not cleaned by any code in 1.0.91, so a row without a dir is a state Copilot itself
+leaves and tolerates. `open-sessions-state.json` and `sidebar-sessions-state/` name session ids too, but
+no code in the 1.0.91 CLI bundle reads or writes them (another Copilot client does); a missing dir there is
+the same state Copilot's own delete leaves. So `remove` deletes the one dir and never touches `logs/`,
+OTel files, the store or anything else.
 
 One host gap keeps plugin code alive: the keys-then-words dialog answer above. (The turn-end gate is
 gone: since 2.1 the host itself waits up to 1.5 s at the end edge for a context sample whose `at` is at
