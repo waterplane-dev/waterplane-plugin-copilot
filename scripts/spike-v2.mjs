@@ -11,6 +11,7 @@
 //   S1 instructions  0   does a --plugin-dir with skills/instructions files get LOADED? (TUI, no prompt)
 //   S2 ask rules     0   --allow-tool/--deny-tool accepted by the parser? any ask-shaped flag? (parser only)
 //   S3 ask_user      1-2 SPENDS: does typed text + Return resolve the ask_user form; which event marks it?
+//   S3c ask keys     1   SPENDS: ↑/↓ + Return in ONE write on the enum form; does tool.execution_complete carry the pick?
 //   S3b typed No     1   SPENDS: past the hold, do `3`, text, Return deny with the reason?
 //   S4 plan + effort 0   do session.start / usage_checkpoint echo plan/reasoningEffort? does /plan exist?
 //   S5 fork          0   any --fork / copy-on-resume flag in --help / help resume? (text only)
@@ -35,6 +36,7 @@ const STEPS = {
   S1: { name: "instructions", credits: "0", spends: false, about: "is a --plugin-dir with skills/instructions files loaded?" },
   S2: { name: "ask rules", credits: "0", spends: false, about: "--allow-tool/--deny-tool/--ask-tool accepted by the parser?" },
   S3: { name: "ask_user", credits: "1-2", spends: true, about: "typed text + Return into the ask_user form; resolution event" },
+  S3c: { name: "ask keys", credits: "1", spends: true, about: "arrows + Return in ONE write on the ask_user enum form; does tool.execution_complete carry the pick?" },
   S3b: { name: "typed No", credits: "1", spends: true, about: "past the hold: `3`, text, Return denies with a reason?" },
   S4: { name: "plan + effort", credits: "0", spends: false, about: "session.start / checkpoint echo plan + reasoningEffort; /plan exists?" },
   S5: { name: "fork", credits: "0", spends: false, about: "any --fork / copy-on-resume flag (help text only)" },
@@ -58,7 +60,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
 }
 const SPEND = argv.includes("--spend");
 const wanted = [];
-for (let i = 0; i < argv.length; i++) if (argv[i] === "--step") for (const s of String(argv[i + 1] ?? "").split(",")) if (s.trim()) wanted.push(s.trim().toUpperCase().replace(/B$/, "b"));
+for (let i = 0; i < argv.length; i++) if (argv[i] === "--step") for (const s of String(argv[i + 1] ?? "").split(",")) if (s.trim()) wanted.push(s.trim().toUpperCase().replace(/([BC])$/, (c) => c.toLowerCase()));
 const bad = wanted.filter((s) => !STEPS[s]);
 if (bad.length) { console.error(`unknown step: ${bad.join(", ")} (see --help)`); process.exit(2); }
 const selected = wanted.length ? [...new Set(wanted)] : Object.keys(STEPS).filter((k) => !STEPS[k].spends);
@@ -330,6 +332,42 @@ async function s3() {
   } finally { t.kill(); }
 }
 
+/** S3c: the plugin's own key walk (`askCursor` + `askKeys`, one PTY write) on an enum form, judged by
+ *  the call's `tool.execution_complete` — never by text that the opening event already carries. */
+async function s3c() {
+  const why = needToken() || needTui() || binOk();
+  if (why) return absent("S3c", why);
+  const { askQuestion, askCursor, askKeys, ASK_TOOL } = await import("../dialogs.mjs");
+  const t = launchTui([], { label: "s3c" });
+  try {
+    if (!(await booted(t))) return absent("S3c", "the TUI never showed a composer within 60 s", saveRaw("s3c-screen.txt", t.screen() || t.raw().slice(-3000)));
+    await sleep(1000);
+    t.write("Call the ask_user tool once, with a single string enum field named colour whose options are exactly red, green, blue, to ask which colour I prefer. Then reply with only the colour I picked."); await sleep(600); t.write("\r");
+    const start = () => t.events().find((e) => e.type === "tool.execution_start" && e.data?.toolName === ASK_TOOL);
+    if (!(await t.until(() => !!start(), 120000))) return absent("S3c", "no ask_user tool.execution_start within 120 s", saveRaw("s3c.json", { screen: t.screen(), events: t.events() }));
+    const open = start(), q = askQuestion(open.data?.arguments), id = open.data?.toolCallId;
+    if (!q) return absent("S3c", "ask_user arguments were not one string enum (askQuestion null)", saveRaw("s3c.json", { opening: open, screen: t.screen() }));
+    const rows = () => t.screen().split("\n");
+    if (!(await t.until(() => askCursor(rows(), q.labels) != null, 30000))) return absent("S3c", "askCursor never found the form on screen within 30 s", saveRaw("s3c.json", { opening: open, labels: q.labels, screen: t.screen() }));
+    const shot = t.screen(), cur = askCursor(rows(), q.labels);
+    const target = cur === q.labels.length - 1 ? 0 : q.labels.length - 1;
+    const keys = askKeys(cur, target);
+    const n0 = t.events().length;
+    t.write(keys);
+    const done = () => t.events().slice(n0).find((e) => e.type === "tool.execution_complete" && e.data?.toolCallId === id);
+    const resolved = await t.until(() => !!done(), 60000);
+    await sleep(4000);
+    const fin = done(), finScreen = t.screen();
+    const raw = saveRaw("s3c.json", { argv: t.args, labels: q.labels, cursor: cur, target, keys: JSON.stringify(keys), formScreen: shot, finalScreen: finScreen, opening: open, eventsAfter: t.events().slice(n0) });
+    if (!resolved) return absent("S3c", `arrows + Return in one write did not complete the ask_user call within 60 s (cursor ${cur} → ${target})`, raw);
+    const body = JSON.stringify(fin.data ?? {});
+    const picked = q.labels[target], other = q.labels.filter((_, i) => i !== target);
+    const carries = new RegExp(`\\b${picked}\\b`, "i").test(body) && !other.some((l) => new RegExp(`\\b${l}\\b`, "i").test(body));
+    const queued = /\[pending\]/.test(finScreen);
+    return rowOf("S3c", true, { cursor: cur, target, picked, completeCarriesPick: carries, queuedPrompt: queued, completeSnippet: body.slice(0, 300), verdict: carries && !queued ? "one write of arrows + Return answers the form: ASK_KEYS_MEASURED may be true" : "the key walk did not answer with the pick: keep ASK_KEYS_MEASURED false" }, { raw });
+  } finally { t.kill(); }
+}
+
 async function s3b() {
   const why = needToken() || needTui() || binOk();
   if (why) return absent("S3b", why);
@@ -356,7 +394,7 @@ async function s3b() {
 }
 
 // ---- run --------------------------------------------------------------------------------------------
-const RUN = { S0: s0, S1: s1, S2: s2, S3: s3, S3b: s3b, S4: s4, S5: s5 };
+const RUN = { S0: s0, S1: s1, S2: s2, S3: s3, S3b: s3b, S3c: s3c, S4: s4, S5: s5 };
 const rows = [];
 let prompts = 0;
 console.log(`spike-v2: out=${OUT}\n`);

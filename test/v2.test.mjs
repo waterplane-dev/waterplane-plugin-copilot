@@ -162,8 +162,8 @@ test("ask_user closes on an abort and on a session restart; pending() lists the 
   assert.deepEqual(r.unposed, [1]);
 });
 
-test("answering it from the phone is refused in words until the key walk is measured; typed words always are", async () => {
-  const r = rig();
+test("with the key walk switched off, answering from the phone is refused in words; typed words always are", async () => {
+  const r = rig({ askKeysMeasured: false });
   r.append(S3.toolExecutionStart);
   r.tick();
   const q = r.qs[0];

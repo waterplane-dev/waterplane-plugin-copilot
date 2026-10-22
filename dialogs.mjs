@@ -73,8 +73,9 @@
  * here): the form draws the enum as a list with the default highlighted, `↑/↓ select · enter
  * accept`; letters typed while it is up land in Copilot's COMPOSER as a queued prompt ("❯ blue
  * [pending]"), and the form stays open. So a typed answer is never offered (`freeText` false), and
- * a pick is answered at the terminal until the key walk (`askKeys`) is measured: `askKeysMeasured`
- * is off, and the pick is refused in words. A form that is not one string enum (free text, several
+ * a pick is answered by the key walk (`askKeys`): S3c (2026-10-22) measured ↑/↓ + Return in ONE
+ * PTY write as keys, not a paste — `tool.execution_complete` carried "User responded: blue" and
+ * nothing was queued. With `askKeysMeasured` off the pick is refused in words. A form that is not one string enum (free text, several
  * fields) is not posed; it is reported `unposed`, which the host shows as waiting on you.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -94,12 +95,13 @@ export const ASK_TOOL = "ask_user";
 export const TUI_KINDS = new Set(["commands", "write", "mcp", "memory", "custom-tool"]);
 
 /**
- * Is the `ask_user` key walk (`askKeys`) MEASURED? No: S3 typed words, which went to the composer;
- * nobody has yet pressed ↑/↓ + Return at the form and read what Copilot logged. Until a spike
- * does (and says whether one PTY write of several arrows and a Return is read as keys, not a
- * paste), a pick from the phone is refused in words.
+ * Is the `ask_user` key walk (`askKeys`) MEASURED? Yes, on 1.0.91 (spike S3c, 2026-10-22): the
+ * form read off the screen by `askCursor` (a field-title row such as "Colour:" sits between the
+ * question and the options), then `\x1b[B\x1b[B\r` in one write picked the third option, and that
+ * call's `tool.execution_complete` carried the pick. S3's typed words, by contrast, went to the
+ * composer. Off, a pick from the phone is refused in words.
  */
-export const ASK_KEYS_MEASURED = false;
+export const ASK_KEYS_MEASURED = true;
 /** The form's last row (S3 capture) and its key hint. */
 export const ASK_OTHER_ROW = "Other (type your answer)";
 const ASK_HINT_RE = /↑\/↓ select\b.*\benter accept/;

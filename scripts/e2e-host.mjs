@@ -71,6 +71,7 @@ const env = {
   [envName("TMUX")]: "0", [envName("PREFLIGHT")]: "0",
   [envName("PORT")]: String(PORT), [envName("HOST")]: "127.0.0.1",
   [envName("ROOT")]: ROOT, [envName("CONFIG_DIR")]: CONFIG,
+  [envName("STATE_DIR")]: join(TMP, "state"), // plugin data and the ack ledger live in the GLOBAL state dir: a fresh one, never the owner's real one
   [envName("ALLOW_PUBLIC")]: undefined, // inherited from a dev shell, it would bind without the guard
   COPILOT_CLI_BIN: join(PLUGIN, "fake", "copilot.mjs"),
   COPILOT_HOME: HOME,
@@ -288,9 +289,9 @@ try {
   check(q9?.askId === ask9?.data.toolCallId && JSON.stringify(q9?.options?.map((o) => o.label)) === JSON.stringify(["Red", "Blue", "Green"]) && !q9?.freeText,
     `ask: its toolCallId, the enum as options, no typed answer (${JSON.stringify(q9 && { askId: q9.askId, options: q9.options, freeText: q9.freeText })})`);
   send({ t: "session.input", id: sid, ackId: "tap9", data: "", expectPrompt: promptFingerprint(q9), promptChoice: 3 });
-  check(await until(() => inputs.has("tap9"), 10000) && inputs.get("tap9").ok === false && /at the terminal/.test(inputs.get("tap9").reason ?? ""), `ask: a tap is refused in words, nothing pressed (${JSON.stringify(inputs.get("tap9"))})`);
-  send({ t: "session.input", id: sid, data: "\r" }); // the person at the desk accepts the highlighted default
-  check(await until(() => evOf("tool.execution_complete", (e) => e.data.toolCallId === ask9?.data.toolCallId)[0]?.data.result.content === "Blue", 10000), "ask: answered at the terminal (the default)");
+  // S3c (2026-10-22): ↓ + Return in one write from the highlighted default (Blue) picks Green
+  check(await until(() => inputs.has("tap9"), 10000) && inputs.get("tap9").ok === true, `ask: a tap is taken (${JSON.stringify(inputs.get("tap9"))})`);
+  check(await until(() => evOf("tool.execution_complete", (e) => e.data.toolCallId === ask9?.data.toolCallId)[0]?.data.result.content === "Green", 10000), "ask: answered from the phone with the tapped option, not the default");
   check(await until(() => cur()?.prompt?.askId !== q9?.askId, 5000), "ask: the question is retired by its completion");
   ws.close();
 } catch (e) {

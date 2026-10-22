@@ -15,9 +15,9 @@ Written for waterplane plugin contract **2.1** (`"apiVersion": "2.1"`), tested a
 commit `ee21844c` (`node --test`, and `scripts/e2e-host.mjs` against its build); both are also in
 `package.json` under `"waterplane"`. It uses the host's 2.0 toolkit instead of its own copies:
 `api.bindConversation` (which conversation a `--continue` launch is — `slots.mjs`), `api.tail` (every
-JSONL log — `jsonl.mjs`), `api.screen` (the `ask_user` form's highlight, for the key walk that is
-still off). Measured on Copilot 1.0.91 (`measured.versions`); real-CLI facts from the main repo's
-spike S0–S5 of 2026-10-21 (`docs/analysis/backend-v2-impl.md` §4).
+JSONL log — `jsonl.mjs`), `api.screen` (the `ask_user` form's highlight, for the key walk —
+measured by S3c). Measured on Copilot 1.0.91 (`measured.versions`); real-CLI facts from the main repo's
+spike S0–S5 of 2026-10-21 and S3c of 2026-10-22 (`docs/analysis/backend-v2-impl.md` §4).
 
 How close to claude, per fact (`facts` in `host.mjs`):
 
@@ -26,7 +26,7 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | turns | hooks | hooks (`userPromptSubmitted` → started, with the accepted words as `TurnFacts.prompt`; `agentStop` → ended) | — |
 | dialogs | screen boxes | the held permission hook, then Copilot's own dialog by keys | — |
 | typed "No" reason | yes | **inside the hold**: the hook's `deny` message. **Past it**: `3`, the reason, Return (S3b measured) — only on a host that types keys then words (`api.supports.dialogKeysThenTyped`); today's host has no such answer shape, so it stays Esc | host gap |
-| questions | `question.ts` | `ask_user` posed (its `toolCallId`, the `enum` as options); **answered at the terminal** | S3 re-read: letters typed at the form land in the COMPOSER as a queued prompt — so never a typed answer; the ↑/↓ + Return walk is built (`askKeys`, off) but unmeasured |
+| questions | `question.ts` | `ask_user` posed (its `toolCallId`, the `enum` as options); **a pick answered from the phone** by ↑/↓ + Return | S3 re-read: letters typed at the form land in the COMPOSER as a queued prompt — so never a typed answer; S3c: the highlight read off the screen, then arrows + Return in ONE write, and `tool.execution_complete` carried the pick ("User responded: blue"), nothing queued |
 | instructions | plugin dir | `env-file`: the host writes `session:instructions/AGENTS.md`, `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it (S1) | — |
 | ask rules | native | `gate` (the host's answer gate) | Copilot has allow/deny flags, no ask (S2) |
 | context | meter + log | tokens from the usage checkpoint / OTel span; no window | `session/new` names no window (S0) |
@@ -151,7 +151,7 @@ during the hold (see below).
 |---|---|
 | Copilot's own "don't ask again" from the phone during the hold | the hook cannot persist one; the host's answer gate keeps a rule for the exact command, in this session (above; needs a daemon with standing rules — `api.ruleAllows`) |
 | A typed reason with "No" past the hold | measured (S3b: `3`, the reason, a separate Return); offered only on a host with `supports.dialogKeysThenTyped` — until then Esc stops the turn |
-| Answering `ask_user` from the phone | the question is shown with its choices; a pick is refused in words until the ↑/↓ + Return walk is measured; typed words never (they land in the composer) |
+| Answering `ask_user` from the phone | a pick: measured (S3c) — the highlight must be on screen as measured and within 7 rows, else refused in words; typed words and free-text or multi-field forms never (the words land in the composer) |
 | Terminal dialogs for URL / path / sandbox-bypass requests | not answered from the phone (refused in words); MCP, memory and extension-tool dialogs are answered from the 1.0.91 source's shape, not measured |
 | A turn aborted while nobody watches | its end comes from the `abort` line, which is read while a phone watches the session; otherwise the host's own fallback ends it |
 | Model list | the binary's own, per account: `copilot --acp --stdio` → `session/new` → `models.availableModels` (models.mjs), asked once per host boot; the throwaway session is closed and its dir removed. `auto` is an alias, every id hosted. Any failure ⇒ empty ⇒ the free-text field |
