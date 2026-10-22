@@ -183,6 +183,25 @@ Spent **0.68 AIC** in all (0.47 + 0.21, `session.usage_checkpoint` = the footer 
 | resume by `--session-id` shows the history | pass |
 | resumed session `hooked` before a prompt | **failed, fixed**: a resume of a session WITH history writes no `inuse.<pid>.lock`. The channel now also reads the live pid's `logs/process-<ms>-<pid>.log` (`Workspace initialized: <id>`, last one wins); re-checked through the host (free, seeded history): up |
 
+### Effort and plan mode (spike S4 + S4b, 2026-10-22)
+
+`node scripts/spike-v2.mjs --step S4` (0 credits) and `--spend --step S4b` (one prompt), real
+`copilot` 1.0.91, Copilot Free (Auto is the only model), isolated `COPILOT_HOME`. Judged by the
+footer row and `events.jsonl` fields, never by the prompt's own text. Quota (`gh api
+/copilot_internal/user`, chat): `quota_remaining` 189.9 before, 189.6 after S4b — **0.3 AIC, one
+request**.
+
+| check | result |
+|---|---|
+| plan / effort flags | `--plan`, `--mode interactive\|plan\|autopilot`, `--autopilot`; `--reasoning-effort none\|minimal\|low\|medium\|high\|xhigh\|max`; config `defaultMode`, `effortLevel`. `--auto-tier efficiency\|balance\|intelligence` is Auto's routing profile, not effort (the `/model` picker's `← Balance →` is that) |
+| plan mode on screen | footer segment, before any prompt: `· Interactive ·` without flags, `· Plan ·` under `--plan`. Shift+Tab cycles Interactive → Plan → Autopilot (footer changed each time; Autopilot drops `? help`) |
+| plan mode in events | yes, from the first turn: `session.mode_changed {previousMode: "interactive", newMode: "plan"}`, and `user.message.agentMode: "plan"`. Nothing before a prompt: Copilot writes no `events.jsonl` until the first model turn (a `!true` shell command wrote none), so a Shift+Tab before the first prompt is footer-only |
+| `/plan`, `/effort` commands | **absent**: the `/` list filtered on `plan`, `effort`, `reason` shows only `/model` |
+| effort set by `--reasoning-effort low` under Auto | **not applied**: `session.start` has no `reasoningEffort`/`selectedModel` key, `session.model_change {cause: "initial_resolution", newModel: "auto", reasoningEffort: null}`, and the turn ran at `user.message.responsesReasoning {model: "gpt-6-luna", initialEffort: "medium", effort: "medium"}` |
+| effort observable | yes, per turn: `user.message.responsesReasoning.effort` (+ `initialEffort`, `model`). Older non-Auto sessions in `~/.copilot/session-state` (read only) also carry `session.start.reasoningEffort`, `session.model_change.reasoningEffort`, the checkpoint's `promptCacheBreakState…reasoning_effort` / `session_mode`, and a ladder `reasoning_effort: ["none","low","medium","high","xhigh"]` on `model.turn_started` — none of those appeared on this Auto turn |
+| effort settable | **not shown on this account**: Auto ignored `low`. Whether an explicit model honours the flag needs a non-Auto model, which Copilot Free does not offer |
+| plan turn behaviour | under `--plan` the model opened an `ask_user` form ("Reply ok only" / "Create a plan…") instead of answering; the turn never ended, so no `session.usage_checkpoint` was read in S4b |
+
 ## Measured on 1.0.91 — fix/known-limits
 
 `PROBE_STEPS=rule,write,nolate node scripts/probe.mjs --spend` (2026-10-02), two runs: the first

@@ -13,7 +13,9 @@
 //   S3 ask_user      1-2 SPENDS: does typed text + Return resolve the ask_user form; which event marks it?
 //   S3c ask keys     1   SPENDS: ↑/↓ + Return in ONE write on the enum form; does tool.execution_complete carry the pick?
 //   S3b typed No     1   SPENDS: past the hold, do `3`, text, Return deny with the reason?
-//   S4 plan + effort 0   do session.start / usage_checkpoint echo plan/reasoningEffort? does /plan exist?
+//   S4 plan + effort 0   footer mode segment; / list for plan/effort; `!true` (shell, no model call) makes the
+//                         session write events.jsonl: does session.start carry --reasoning-effort? shift+tab?
+//   S4b plan turn    1   SPENDS: one prompt under --plan --reasoning-effort low; user.message / checkpoint fields
 //   S5 fork          0   any --fork / copy-on-resume flag in --help / help resume? (text only)
 // Budget: <= 4 prompts total. Without --spend, S3/S3b are skipped and reported as such.
 //
@@ -38,7 +40,8 @@ const STEPS = {
   S3: { name: "ask_user", credits: "1-2", spends: true, about: "typed text + Return into the ask_user form; resolution event" },
   S3c: { name: "ask keys", credits: "1", spends: true, about: "arrows + Return in ONE write on the ask_user enum form; does tool.execution_complete carry the pick?" },
   S3b: { name: "typed No", credits: "1", spends: true, about: "past the hold: `3`, text, Return denies with a reason?" },
-  S4: { name: "plan + effort", credits: "0", spends: false, about: "session.start / checkpoint echo plan + reasoningEffort; /plan exists?" },
+  S4: { name: "plan + effort", credits: "0", spends: false, about: "footer mode segment, / list, `!true` (no model call) to get events.jsonl: session.start reasoningEffort; shift+tab" },
+  S4b: { name: "plan turn", credits: "1", spends: true, about: "one prompt under --plan --reasoning-effort low: do user.message / checkpoint carry mode + effort?" },
   S5: { name: "fork", credits: "0", spends: false, about: "any --fork / copy-on-resume flag (help text only)" },
 };
 // This account offers only Auto, so no --model is passed unless --model <id> is given.
@@ -53,7 +56,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
   for (const [k, s] of Object.entries(STEPS)) {
     console.log(`  ${k.padEnd(4)} ${s.name.padEnd(14)} credits: ${s.credits.padEnd(4)} ${s.spends ? "[needs --spend] " : ""}${s.about}`);
   }
-  console.log("\nNo --step: every zero-credit step. Spending steps (S3, S3b) require --spend (no --model unless given).");
+  console.log("\nNo --step: every zero-credit step. Spending steps (S3, S3b, S3c, S4b) require --spend (no --model unless given).");
   console.log("Isolated COPILOT_HOME + temp cwd; nothing written to ~/.copilot or any repo. Report: <out>/report.json.");
   console.log("Env: MAIN_REPO (usmc checkout holding node-pty and @xterm/headless; default ~/dev/usmc), COPILOT_CLI_BIN.");
   process.exit(0);
@@ -264,30 +267,81 @@ async function s2() {
 }
 
 // ---- S4 plan + effort -------------------------------------------------------------------------------
+/** The footer's mode segment: the row under the composer's lower rule, e.g. `← open sidebar · Plan · Manual Approval · …`. */
+const footerOf = (screen) => { const rows = screen.split("\n"); const i = rows.findLastIndex((r) => /open sidebar|\/ commands|\? help/.test(r)); return i >= 0 ? rows[i].trim() : null; };
+const flat = (o) => JSON.stringify(o ?? {});
+/** Effort and mode as the events carry them: field paths only, never prompt text. */
+function effortFacts(ev) {
+  const start = ev.find((e) => e.type === "session.start");
+  const changes = ev.filter((e) => e.type === "session.model_change").map((e) => ({ source: e.data?.source ?? null, cause: e.data?.cause ?? null, newModel: e.data?.newModel ?? null, reasoningEffort: e.data?.reasoningEffort ?? null }));
+  const users = ev.filter((e) => e.type === "user.message").map((e) => ({ agentMode: e.data?.agentMode ?? null, responsesReasoning: e.data?.responsesReasoning ?? null, planPrefix: [e.data?.content, e.data?.transformedContent].some((c) => /^\s*\[\[PLAN\]\]/.test(String(c ?? ""))), keys: Object.keys(e.data ?? {}).filter((k) => !/content|attachments/i.test(k)) }));
+  const cps = ev.filter((e) => e.type === "session.usage_checkpoint").map((e) => { const s = flat(e.data); return { sessionModes: [...new Set(s.match(/"session_mode":"[a-z_-]+"/g) ?? [])], reasoningEfforts: [...new Set(s.match(/"reasoning_effort":"[a-z]+"/g) ?? [])] }; });
+  const ladders = [...new Set(ev.filter((e) => e.type === "model.turn_started").flatMap((e) => flat(e.data).match(/"reasoning_effort":\[[^\]]*\]/g) ?? []))];
+  const modeEvents = ev.filter((e) => /mode/i.test(e.type)).map((e) => ({ type: e.type, data: e.data }));
+  return { sessionStart: start ? { reasoningEffort: start.data?.reasoningEffort ?? null, selectedModel: start.data?.selectedModel ?? null, keys: Object.keys(start.data ?? {}) } : null, modelChanges: changes, userMessages: users, checkpoints: cps, effortLadders: ladders, modeEvents, eventTypes: [...new Set(ev.map((e) => e.type))] };
+}
+/** Zero credits: two TUIs (no flags; `--plan --reasoning-effort low`). Read the footer, the `/` list
+ *  filtered to plan/effort, then `!true` (a shell command, no model call) to make Copilot write its
+ *  events.jsonl, then shift+tab once, and judge only by footer rows and events.jsonl fields. */
 async function s4() {
   const why = needToken() || needTui() || binOk();
   if (why) return absent("S4", why);
-  const t = launchTui(["--plan", "--effort", "high"], { label: "s4" });
+  const out = {};
+  for (const [label, args] of [["base", []], ["plan", ["--plan", "--reasoning-effort", "low"]]]) {
+    const t = launchTui(args, { label: `s4-${label}` });
+    try {
+      if (!(await booted(t))) return absent("S4", `the ${label} TUI never showed a composer within 60 s`, saveRaw(`s4-${label}-screen.txt`, t.screen() || t.raw().slice(-3000)));
+      await sleep(1500);
+      const r = { argv: t.args, footer: footerOf(t.screen()) };
+      for (const q of ["plan", "effort", "reason"]) { t.write(`/${q}`); await sleep(1500); r[`slash_${q}`] = t.screen().split("\n").filter((l) => /^\s*\/[a-z-]+\s{2,}\S/.test(l)).map((l) => l.trim().slice(0, 140)); t.write("\x15"); await sleep(400); t.write("\x1b"); await sleep(600); }
+      // the model picker: is effort chosen there (Return as its own write)?
+      t.write("/model"); await sleep(800); t.write("\r"); await sleep(2500);
+      r.modelPicker = t.screen().split("\n").filter((l) => /effort|reason|low|medium|high|auto/i.test(l)).map((l) => l.trim().slice(0, 140));
+      t.write("\x1b"); await sleep(800); t.write("\x1b"); await sleep(600);
+      t.write("!true"); await sleep(500); t.write("\r");
+      await t.until(() => t.events().length > 0, 15000); await sleep(1500);
+      r.afterShell = effortFacts(t.events());
+      const n0 = t.events().length;
+      t.write("\x1b[Z"); await sleep(2000);
+      r.footerAfterShiftTab = footerOf(t.screen());
+      r.eventsAfterShiftTab = t.events().slice(n0).map((e) => ({ type: e.type, data: e.data }));
+      r.screen = t.screen();
+      out[label] = r;
+    } finally { t.kill(); }
+  }
+  const raw = saveRaw("s4.json", out);
+  const p = out.plan, b = out.base;
+  const startEffort = p.afterShell.sessionStart?.reasoningEffort ?? null;
+  return rowOf("S4", true, {
+    footerBase: b.footer, footerPlan: p.footer, footerBaseAfterShiftTab: b.footerAfterShiftTab, footerPlanAfterShiftTab: p.footerAfterShiftTab,
+    slashPlan: p.slash_plan, slashEffort: [...p.slash_effort, ...p.slash_reason], modelPickerRows: p.modelPicker,
+    eventsWrittenByShell: { base: b.afterShell.eventTypes, plan: p.afterShell.eventTypes },
+    sessionStartEffort: { base: b.afterShell.sessionStart?.reasoningEffort ?? null, plan: startEffort },
+    modeEventsOnShiftTab: { base: b.eventsAfterShiftTab.map((e) => e.type), plan: p.eventsAfterShiftTab.map((e) => e.type) },
+    verdict: `${startEffort === "low" ? "--reasoning-effort low echoed by session.start" : `session.start effort ${startEffort === null ? "not read" : `= ${startEffort}`}`}; footer plan segment ${/\bPlan\b/.test(p.footer ?? "") && !/\bPlan\b/.test(b.footer ?? "") ? "shows" : "does not show"} plan mode`,
+  }, { raw });
+}
+
+/** S4b (1 request): one prompt in a `--plan --reasoning-effort low` session; does the turn's
+ *  user.message / checkpoint carry the mode and the effort? Judged by event fields only. */
+async function s4b() {
+  const why = needToken() || needTui() || binOk();
+  if (why) return absent("S4b", why);
+  const t = launchTui(["--plan", "--reasoning-effort", "low"], { label: "s4b" });
   try {
-    if (!(await booted(t))) return absent("S4", "the TUI never showed a composer within 60 s", saveRaw("s4-screen.txt", t.screen() || t.raw().slice(-3000)));
+    if (!(await booted(t))) return absent("S4b", "the TUI never showed a composer within 60 s", saveRaw("s4b-screen.txt", t.screen() || t.raw().slice(-3000)));
     await sleep(1500);
-    const bootScreen = t.screen();
-    t.write("/help\r"); await sleep(2500);
-    const help = t.screen(); t.write("\x1b"); await sleep(500);
-    await sleep(1500);
-    const ev = t.events();
-    const first = ev.slice(0, 12);
-    const flat = (o) => JSON.stringify(o ?? {});
-    const startEv = ev.find((e) => e.type === "session.start");
-    const echo = (re) => ev.filter((e) => re.test(flat(e.data))).map((e) => e.type);
-    const raw = saveRaw("s4.json", { argv: t.args, bootScreen, help, firstEvents: first, eventTypes: [...new Set(ev.map((e) => e.type))] });
-    if (!ev.length) {
-      return absent("S4", "no events.jsonl lines before the first prompt (Copilot writes session.start lazily, measured); this step sends no prompt, so session.start/usage_checkpoint echo cannot be read", raw);
-    }
-    return rowOf("S4", true, {
-      sessionStartSeen: !!startEv, eventsWithPlan: echo(/"plan"|planMode|"mode":"plan"/i), eventsWithReasoningEffort: echo(/reasoningEffort|"effort"/i),
-      startEventData: startEv?.data ?? null, planCommandListed: /(^|\s)\/plan\b/m.test(help), bootShowsPlan: /plan/i.test(bootScreen),
-      verdict: echo(/reasoningEffort|"effort"/i).length ? "effort echoed: caps.effort may be measured" : "effort not echoed: caps.effort absent",
+    const footer = footerOf(t.screen());
+    t.write("Reply with the single word ok, without calling any tool."); await sleep(600); t.write("\r");
+    const done = await t.until(() => t.events().some((e) => e.type === "session.usage_checkpoint"), 120000);
+    await sleep(3000);
+    const ev = t.events(), f = effortFacts(ev);
+    const raw = saveRaw("s4b.json", { argv: t.args, footer, footerAfter: footerOf(t.screen()), screen: t.screen(), facts: f });
+    if (!done) return absent("S4b", "no session.usage_checkpoint within 120 s of the prompt", raw);
+    const modes = f.checkpoints.flatMap((c) => c.sessionModes), efforts = f.checkpoints.flatMap((c) => c.reasoningEfforts);
+    return rowOf("S4b", true, {
+      footer, sessionStartEffort: f.sessionStart?.reasoningEffort ?? null, userMessages: f.userMessages, checkpointSessionModes: modes, checkpointEfforts: efforts, effortLadders: f.effortLadders, modelChanges: f.modelChanges, modeEvents: f.modeEvents.map((e) => e.type),
+      verdict: `plan in events: ${modes.some((m) => /plan/.test(m)) || f.userMessages.some((u) => u.planPrefix || /plan/i.test(String(u.agentMode))) ? "yes" : "no"}; effort in events: ${efforts.length || f.userMessages.some((u) => u.responsesReasoning) ? "yes" : "no"}`,
     }, { raw });
   } finally { t.kill(); }
 }
@@ -394,7 +448,7 @@ async function s3b() {
 }
 
 // ---- run --------------------------------------------------------------------------------------------
-const RUN = { S0: s0, S1: s1, S2: s2, S3: s3, S3b: s3b, S3c: s3c, S4: s4, S5: s5 };
+const RUN = { S0: s0, S1: s1, S2: s2, S3: s3, S3b: s3b, S3c: s3c, S4: s4, S4b: s4b, S5: s5 };
 const rows = [];
 let prompts = 0;
 console.log(`spike-v2: out=${OUT}\n`);
