@@ -153,5 +153,8 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   /** The slot of a host session id, if one exists — never creates one. */
   const peek = (hostId) => byHost.get(hostId) ?? null;
 
-  return { slotFor, peek, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
+  /** Is this Copilot session id routed to a live slot here? Case-insensitive, like every insert. */
+  const has = (id) => typeof id === "string" && byId.has(id.toLowerCase());
+
+  return { slotFor, peek, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
 }

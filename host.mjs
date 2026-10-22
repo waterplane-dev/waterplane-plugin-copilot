@@ -193,7 +193,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
       tokens: createLedger({ home, otelDir, tail }),
       context: context ?? createContextSource({ otelDir, home, idOf, tail }),
       // A Copilot id this host has routed to one of its sessions is never deleted from here.
-      conversations: createConversationSource({ home, held: (id) => router._byId?.has(String(id).toLowerCase()) === true }),
+      conversations: createConversationSource({ home, held: (id) => router.has(id) }),
       attach,
     },
   };

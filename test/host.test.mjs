@@ -6,7 +6,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { makeFakeApi, fakeHold } from "./fakeapi.mjs";
@@ -186,4 +187,25 @@ test("an older host (no standing rules): no option 2 during the hold, and the fo
   host.activate(api);
   const action = api._calls.on.find((x) => x.event === "action").fn;
   assert.match(action({ action: host.FORGET_ACTION, sessionId: "wp-1" }).message, /keeps no allow rules/);
+});
+
+test("conversations.remove refuses an id the host has routed to a session, through host.mjs's own wiring", async () => {
+  const base = mkdtempSync(join(tmpdir(), "wp-copilot-held-"));
+  const home = join(base, "home");
+  const repo = join(base, "repo");
+  mkdirSync(repo, { recursive: true });
+  const dir = join(home, "session-state", ID);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "workspace.yaml"), `id: ${ID}\ncwd: ${repo}\nsummary_count: 0\n`);
+  writeFileSync(join(dir, "events.jsonl"), "");
+  const api = makeFakeApi({ env: { COPILOT_HOME: home, COPILOT_CLI_BIN: "/nonexistent/copilot" } });
+  host.activate(api);
+  const conv = api._calls.backend[0].sources.conversations;
+  const handle = await api._calls.backend[0].sources.attach({ id: "wp-held", cwd: repo, spawnedAt: 0, backendSessionId: ID.toUpperCase() }, () => {});
+  const r = await conv.remove(repo, ID);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /open in a session on this host/);
+  assert.equal(existsSync(dir), true, "a routed conversation is left on disk");
+  await handle.close();
+  assert.equal((await conv.remove(repo, ID)).ok, true, "once the session is released the same id can be deleted");
 });

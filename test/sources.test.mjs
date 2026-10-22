@@ -107,7 +107,7 @@ test("the channel is up while a live process holds the session lock, down once i
   assert.match(h.health().note, /exited/);
   assert.deepEqual(healths, ["up", "down"]);
   await h.close();
-  assert.equal(r._byId.has(ID), false, "a closed channel releases its slot");
+  assert.equal(r.has(ID), false, "a closed channel releases its slot");
 });
 
 test("a hook proves the pipe; sessionEnd closes it", async () => {
@@ -154,4 +154,16 @@ test("a resumed session writes no lock: its live process log names it (last Work
   assert.equal(h.health().state, "down");
   assert.match(h.health().note, /exited/);
   await h.close();
+});
+
+test("slots.has: case-insensitive, true only for a routed Copilot id, false after release and for junk", () => {
+  const r = createSlots();
+  const slot = r.slotFor({ id: "h1", cwd: "/tmp", backendSessionId: ID.toUpperCase() });
+  assert.equal(r.has(ID), true);
+  assert.equal(r.has(ID.toUpperCase()), true);
+  assert.equal(r.has("6e03459d-0000-4000-8000-000000000000"), false);
+  assert.equal(r.has(undefined), false);
+  assert.equal(r.has(null), false);
+  r.release(slot);
+  assert.equal(r.has(ID), false);
 });
