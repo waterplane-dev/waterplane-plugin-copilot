@@ -199,8 +199,11 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
   const attach = createAttach(router, { home: () => copilotHome(env) });
   // A --continue session learns its Copilot id from its first hook, so the id comes off the slot.
   const home = copilotHome(env);
-  const idOf = (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined;
-  const ls = createLogSources(createSessionLog({ home, idOf, tail }));
+  // A slot that followed a /fork reads the FORK's id, not the host record's stale one.
+  const idOf = (ss) => { const sl = router.slotFor(ss); return (sl.forkedFrom ? sl.id : ss.backendSessionId || sl.id) || undefined; };
+  const sessionLog = createSessionLog({ home, idOf, tail });
+  router.setForkReader?.((ss) => sessionLog.forkOf(ss));
+  const ls = createLogSources(sessionLog);
   const ledger = createLedger({ home, otelDir, tail });
   return {
     id: BACKEND_ID,
@@ -266,7 +269,7 @@ export function activate(api) {
   });
   const context = createContextSource({
     otelDir: join(api.dataDir, "otel"), home: () => copilotHome((k) => api.env(k)),
-    idOf: (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined,
+    idOf: (ss) => { const sl = router.slotFor(ss); return (sl.forkedFrom ? sl.id : ss.backendSessionId || sl.id) || undefined; },
     tail: (p, on, o) => api.tail(p, on, o),
   });
   // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may

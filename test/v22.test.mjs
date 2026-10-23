@@ -130,3 +130,35 @@ test("usage: names the extension's source, reads nothing itself", async () => {
   assert.equal("wall" in USAGE, false);
   assert.ok(FACTS.usage && FACTS.mode && FACTS.commands && FACTS.plan && FACTS.agents);
 });
+
+test("/fork: the slot adopts the id its OWN log names; subagent ids stay unbound", async () => {
+  const { createSlots } = await import("../slots.mjs");
+  const OLD = "51f52434-8581-4b24-9c50-722874da8d0c", NEW = "77553094-03b8-40f6-bd61-d99bc96d7f6b";
+  const SUB = "aaaaaaaa-0000-4000-8000-000000000001";
+  const main = lines("probe-main-1098.jsonl");
+  // the real 1.0.98 record from the parent's log (fixture), folded as the plugin does
+  const fold = replay(main);
+  assert.equal(fold.forkTo, NEW);
+  // the fork's own log says "Forked from … (<parent>)": never a target
+  const own = replay(lines("probe-fork-fleet-1098.jsonl"));
+  assert.equal(own.forkTo, null);
+
+  let log = emptyFold(); // before the person types /fork
+  const slots = createSlots();
+  slots.setForkReader(() => log.forkTo);
+  const ss = { id: "w1", cwd: "/probe/repo", backendSessionId: OLD, spawnedAt: 0 };
+  const slot = slots.slotFor(ss);
+  assert.equal(slots.route({ sessionId: OLD, cwd: "/probe/repo" }), slot);
+  assert.equal(slots.route({ sessionId: NEW, cwd: "/probe/repo" }), null, "no fork record yet: not ours");
+  assert.equal(slots.route({ sessionId: SUB, cwd: "/probe/repo" }), null);
+
+  log = fold; // /fork written to the slot's own log
+  assert.equal(slots.route({ sessionId: SUB, cwd: "/probe/repo" }), null, "a subagent id is never bound, same cwd or not");
+  assert.equal(slots.route({ sessionId: NEW, cwd: "/probe/repo" }), slot, "the fork's hooks reach the same waterplane session");
+  assert.equal(slot.id, NEW);
+  assert.equal(slots.route({ sessionId: NEW.toUpperCase(), cwd: "/x" }), slot);
+  // the process now runs the fork: the old id no longer routes (the parent's session is not live)
+  assert.equal(slots.route({ sessionId: OLD, cwd: "/probe/repo" }), null);
+  assert.equal(slots.has(OLD), false);
+  assert.equal(slots.route({ sessionId: SUB, cwd: "/probe/repo" }), null);
+});

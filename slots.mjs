@@ -47,6 +47,7 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   const makeSlot = (ss) => ({
     id: ss.backendSessionId ? ss.backendSessionId.toLowerCase() : null,
     hostId: ss.id,
+    ss,
     cwd: real(ss.cwd),
     health: { state: "down", since: now(), note: "waiting for Copilot to open the session" },
     turns: new Set(),
@@ -116,12 +117,41 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
     return out;
   }
 
+  /** `(ss) => id|null`: the id this session's OWN log says it was forked into (`/fork`). Set by the backend. */
+  let forkReader = null;
+  const setForkReader = (fn) => { forkReader = typeof fn === "function" ? fn : null; };
+
+  /**
+   * `/fork` typed inside a live Copilot: the TUI continues AS the fork, so its hooks carry an id
+   * this router never issued. The slot whose OWN log (`session.info {infoType:"fork"}`) names that
+   * id takes it over; the old id is dropped (that process now runs the fork, and an old-id hook
+   * can only come from a different, later launch). Never by cwd: a subagent's hooks keep routing nowhere.
+   */
+  function followFork(sid) {
+    if (!forkReader) return null;
+    for (const slot of byHost.values()) {
+      if (!slot.id || slot.ss == null) continue;
+      let to = null;
+      try { to = forkReader(slot.ss); } catch { to = null; }
+      if (to !== sid) continue;
+      if (byId.get(slot.id) === slot) byId.delete(slot.id);
+      (slot.forkedFrom ??= []).push(slot.id);
+      slot.id = sid;
+      strays.delete(sid);
+      byId.set(sid, slot);
+      return slot;
+    }
+    return null;
+  }
+
   /** The slot a hook payload belongs to, or null (not ours, or cannot say yet). */
   function route(payload) {
     const sid = payload && typeof payload.sessionId === "string" ? payload.sessionId.toLowerCase() : null;
     if (!sid || !SESSION_ID_RE.test(sid)) return null;
     const hit = byId.get(sid);
     if (hit) return hit;
+    const forked = followFork(sid);
+    if (forked) return forked;
     const cwd = real(payload.cwd);
     if (!cwd || !unbound.size) return null;
     let st = strays.get(sid);
@@ -156,5 +186,5 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   /** Is this Copilot session id routed to a live slot here? Case-insensitive, like every insert. */
   const has = (id) => typeof id === "string" && byId.has(id.toLowerCase());
 
-  return { slotFor, peek, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
+  return { slotFor, peek, setForkReader, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
 }

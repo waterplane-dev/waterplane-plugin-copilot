@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { follow } from "./jsonl.mjs";
 import { eventsPath, SESSION_ID_RE } from "./paths.mjs";
 
-const WANT = ["session.mode_changed", "session.compaction_", "session.usage_record", "session.usage_checkpoint",
+const WANT = ["session.info", "session.mode_changed", "session.compaction_", "session.usage_record", "session.usage_checkpoint",
   "subagent.", "exit_plan_mode", "tool.execution_complete", "\"abort\""];
 const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 const ts = (e) => { const t = Date.parse(e?.timestamp); return Number.isFinite(t) ? t : undefined; };
@@ -43,7 +43,7 @@ export function modeOf(name) {
 
 export function emptyFold() {
   return { mode: null, windows: new Map(), lastModel: null, compactions: [], pending: null, checkpoint: null,
-    agentRecs: [], agents: new Map(), plan: null, planClosed: null };
+    agentRecs: [], agents: new Map(), plan: null, planClosed: null, forkTo: null };
 }
 
 /** Apply one events.jsonl record to a fold (exported for tests: replay a fixture). */
@@ -51,6 +51,14 @@ export function applyEvent(f, e) {
   const d = e?.data ?? {};
   const at = ts(e);
   switch (e?.type) {
+    case "session.info": {
+      // `/fork`, in THIS session's log: "Forked this session into "<name>" (<new id>)." (1.0.98). The
+      // fork's own log says "Forked from … (<parent>)" instead — never read as a target.
+      const m = d.infoType === "fork" && typeof d.message === "string" && d.message.startsWith("Forked this session into")
+        ? /\(([0-9a-fA-F-]{36})\)\.?\s*$/.exec(d.message) : null;
+      if (m && SESSION_ID_RE.test(m[1])) f.forkTo = m[1].toLowerCase();
+      break;
+    }
     case "session.mode_changed":
       if (typeof d.newMode === "string") f.mode = d.newMode;
       break;
@@ -167,7 +175,9 @@ export function createSessionLog({ home, idOf, tail }) {
     try { if (id && h) file = readFileSync(join(h, "session-state", id, "plan.md"), "utf8").trim(); } catch { /* none */ }
     return file || plan.summary;
   }
-  return { fold, planText, idFor };
+  /** The id this session's own log says it was forked into, or null. */
+  const forkOf = (ss) => fold(ss)?.forkTo ?? null;
+  return { fold, planText, idFor, forkOf };
 }
 
 /** The 2.2 sources over one session log. `caps` = the descriptor's caps (for the mode set). */
