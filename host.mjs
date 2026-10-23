@@ -32,6 +32,7 @@ import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
 import { createConversationSource } from "./conversations.mjs";
+import { copilotSignIn, signInRow } from "./setup.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -199,6 +200,8 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
   };
 }
 
+export { doctorChecks as doctor } from "./setup.mjs";
+
 export function activate(api) {
   const pluginDir = join(api.dataDir, "copilot-plugin");
   const otelDir = join(api.dataDir, "otel");
@@ -259,6 +262,7 @@ export function activate(api) {
     return { ok: true, message: n ? `Forgot ${n} allow rule${n === 1 ? "" : "s"}: Copilot asks again.` : "This session has no allow rules." };
   });
 
+  api.setupCheck(() => signInRow(copilotSignIn((k) => api.env(k))));
   const bin = resolveBin((k) => api.env(k));
   api.setStatus(binFound(bin)
     ? { tone: "ok", text: `copilot at ${bin}; hooks time out at ${hookTimeoutSec(holdMs)} s, the phone holds ${holdMs / 1000} s` }
