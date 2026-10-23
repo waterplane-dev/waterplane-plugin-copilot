@@ -54,6 +54,10 @@ One host gap keeps plugin code alive: the keys-then-words dialog answer above. (
 gone: since 2.1 the host itself waits up to 1.5 s at the end edge for a context sample whose `at` is at
 or after it.)
 
+## Status: preview
+
+This is a **preview** release (0.1.0). It needs GitHub Copilot CLI installed and signed in on the desktop that runs the waterplane daemon.
+
 ## Install
 
 Installer: `install.sh --with copilot` does steps 2 and 3. By hand:
