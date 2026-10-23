@@ -14,7 +14,8 @@ const bogus = (k) => (k === "COPILOT_CLI_BIN" ? "/nonexistent/copilot" : undefin
 test("sign-in is read from config.json (JSONC), env tokens count, a missing file is out, junk is unknown", () => {
   const cfg = '// User settings\n{\n  "last_logged_in_user": { "host": "https://github.com", "login": "octo" }\n}\n';
   assert.deepEqual(copilotSignIn(noEnv, home(cfg)), { state: "in", login: "octo", via: "config.json" });
-  assert.equal(copilotSignIn(noEnv, home('{ "logged_in_users": [] }')).state, "out");
+  assert.equal(copilotSignIn(noEnv, home('{ "lastLoggedInUser": { "login": "camel" } }')).login, "camel");
+  assert.equal(copilotSignIn(noEnv, home('{ "loggedInUsers": [] }')).state, "out");
   assert.equal(copilotSignIn(noEnv, home(null)).state, "out");
   assert.equal(copilotSignIn(noEnv, home("{ not json")).state, "unknown");
   assert.equal(copilotSignIn((k) => (k === "GH_TOKEN" ? "x" : undefined), home(null)).state, "in");

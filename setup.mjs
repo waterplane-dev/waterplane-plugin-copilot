@@ -3,8 +3,8 @@
  * host's own `backend-cli-copilot` row, generated from the descriptor.)
  *
  * No model call, no network: the sign-in is READ from where the CLI itself records it —
- * `<COPILOT_HOME>/config.json` (JSONC: `//` comment lines, then `last_logged_in_user` /
- * `logged_in_users` with the GitHub login; the token itself sits in the OS keychain and is NOT
+ * `<COPILOT_HOME>/config.json` (JSONC: `//` comment lines, then `lastLoggedInUser` /
+ * `loggedInUsers` (measured on 1.0.91; snake_case also accepted) with the GitHub login; the token is in that file or the keychain and is NOT
  * read) — or an env token the CLI honours. So the answer is "a sign-in is recorded", never "the
  * token is still valid"; expiry shows only when the CLI is launched. A config that cannot be read
  * or parsed answers `unknown`: the row is ABSENT then, never a guessed ok.
@@ -33,7 +33,8 @@ export function copilotSignIn(env = (k) => process.env[k], home = copilotHome(en
     cfg = JSON.parse(text);
   } catch { return { state: "unknown" }; }
   if (!cfg || typeof cfg !== "object") return { state: "unknown" };
-  const users = [cfg.last_logged_in_user, ...(Array.isArray(cfg.logged_in_users) ? cfg.logged_in_users : [])];
+  const list = cfg.loggedInUsers ?? cfg.logged_in_users;
+  const users = [cfg.lastLoggedInUser ?? cfg.last_logged_in_user, ...(Array.isArray(list) ? list : [])];
   const who = users.find((u) => u && typeof u.login === "string" && u.login);
   return who ? { state: "in", login: who.login, via: "config.json" } : { state: "out" };
 }
