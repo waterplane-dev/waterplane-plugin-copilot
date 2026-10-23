@@ -33,6 +33,8 @@ import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
 import { createConversationSource } from "./conversations.mjs";
 import { copilotSignIn, signInRow } from "./setup.mjs";
+import { createLogSources, createSessionLog } from "./sessionlog.mjs";
+import { createCommandSource } from "./commands.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -69,8 +71,13 @@ export const CAPS = Object.freeze({
  *   what a phone may answer.
  * - conversations: `<home>/session-state` (conversations.mjs) — every Copilot session for the cwd,
  *   plain-terminal ones included; `remove` deletes that one dir, as Copilot's own delete does.
- * - no limits/usage/plan/agents: none was measured (or the host slot has not landed: `usage`), so
- *   they are ABSENT. No fork flag was measured, so `conversations.fork` stays absent too.
+ * - mode, plan, agents, the context window + compactions and this session's spend (2.2): the
+ *   events.jsonl fold in sessionlog.mjs, each measured on 1.0.98; commands: `copilot help commands`.
+ * - usage: the account reading is the in-repo copilot-usage extension's source "copilot" (backend
+ *   "copilot"); this backend names the same source and the host registers it only when nobody holds
+ *   that id for this backend (usagesources.ts) — one reading, never two.
+ * - no limits: no wall text was ever seen (the quota never ran out), so `usage.wall` stays absent.
+ *   `conversations.fork` absent: `/fork` is in-session only (a typed command; a plugin never types).
  */
 export const FACTS = Object.freeze({
   turns: Object.freeze([Object.freeze({ source: true })]),
@@ -81,7 +88,32 @@ export const FACTS = Object.freeze({
   context: Object.freeze([Object.freeze({ source: true })]),
   tokens: Object.freeze([Object.freeze({ source: true })]),
   conversations: Object.freeze([Object.freeze({ source: true })]),
+  usage: Object.freeze([Object.freeze({ source: true })]),
+  agents: Object.freeze([Object.freeze({ source: true })]),
+  plan: Object.freeze([Object.freeze({ source: true })]),
+  mode: Object.freeze([Object.freeze({ source: true })]),
+  commands: Object.freeze([Object.freeze({ source: true })]),
 });
+
+/**
+ * The account's usage is the copilot-usage extension's reading (source "copilot"); this backend only
+ * names it. `windows()` null = this private plugin never reads the account itself.
+ */
+export const USAGE = Object.freeze({ source: "copilot", label: "Copilot", windows: async () => null });
+
+/** A context source with the 2.2 window (only for the sample's own model) and compactions. */
+export function withLog(ctx, ls) {
+  return {
+    sample(ss) {
+      const s = ctx.sample(ss);
+      if (!s?.model) return s;
+      const w = ls.context.windowFor(ss, s.model);
+      return w ? { ...s, window: w } : s;
+    },
+    compactions: (ss) => ls.context.compactions(ss),
+    ...(typeof ctx.watch === "function" ? { watch: (ss, on) => ctx.watch(ss, on) } : {}),
+  };
+}
 
 /** `copilot --version` ("GitHub Copilot CLI 1.0.91.") as "1.0.91", or null when it cannot be asked. */
 export async function copilotVersion(bin) {
@@ -168,6 +200,8 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
   // A --continue session learns its Copilot id from its first hook, so the id comes off the slot.
   const home = copilotHome(env);
   const idOf = (ss) => ss.backendSessionId || router.slotFor(ss).id || undefined;
+  const ls = createLogSources(createSessionLog({ home, idOf, tail }));
+  const ledger = createLedger({ home, otelDir, tail });
   return {
     id: BACKEND_ID,
     label: "GitHub Copilot",
@@ -181,7 +215,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     delivery: DELIVERY,
     caps: CAPS,
     facts: FACTS,
-    measured: { versions: ["1.0.91"], version: () => copilotVersion(resolveBin(env)) },
+    measured: { versions: ["1.0.91", "1.0.98"], version: () => copilotVersion(resolveBin(env)) },
     // The binary's own list for this account (models.mjs, over ACP); the host
     // asks once per boot. A failure is an empty catalogue, i.e. the free-text field.
     models: () => readModels({ bin: resolveBin(env), home, env: SPAWN_ENV }),
@@ -191,8 +225,13 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
       questions: dialogs.questions,
       transcript: createTranscriptSource({ home, idOf, tail }),
       delivery: createDeliverySource({ home, idOf, tail, onSend: (ss, text) => router.noteSent(router.peek(ss.id), text) }),
-      tokens: createLedger({ home, otelDir, tail }),
-      context: context ?? createContextSource({ otelDir, home, idOf, tail }),
+      tokens: { ledger: (maxAgeMs) => ledger.ledger(maxAgeMs), session: ls.tokens.session },
+      context: withLog(context ?? createContextSource({ otelDir, home, idOf, tail }), ls),
+      mode: ls.mode,
+      plan: ls.plan,
+      agents: ls.agents,
+      usage: USAGE,
+      commands: createCommandSource({ bin: () => resolveBin(env), env: SPAWN_ENV, version: () => copilotVersion(resolveBin(env)) }),
       // A Copilot id this host has routed to one of its sessions is never deleted from here.
       conversations: createConversationSource({ home, held: (id) => router.has(id) }),
       attach,

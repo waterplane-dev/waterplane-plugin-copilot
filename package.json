@@ -14,7 +14,7 @@
   },
   "license": "MIT",
   "waterplane": {
-    "apiVersion": "2.1",
+    "apiVersion": "2.2",
     "host": "ee21844c"
   }
 }

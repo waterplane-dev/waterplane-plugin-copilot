@@ -5,13 +5,13 @@ your desktop. It adds **GitHub Copilot CLI** as a backend: the launcher can star
 in any repo, the phone types into it like a person would, and Copilot's own lifecycle hooks tell the
 daemon exactly when a turn starts and ends.
 
-Everything here is measured against **Copilot CLI 1.0.91** (the main repo's
+Everything here is measured against **Copilot CLI 1.0.91**, the 2.2 slots against **1.0.98** (the main repo's
 `docs/analysis/spikes/2026-10-01-copilot-1.0.91.md`, fixtures copied to `test/fixtures/`), or says
 that it is not. MIT licensed.
 
 ## Plugin contract
 
-Written for waterplane plugin contract **2.1** (`"apiVersion": "2.1"`), tested against the main repo at
+Written for waterplane plugin contract **2.2** (`"apiVersion": "2.2"`; 2.1 until 2026-10-23), tested against the main repo at
 commit `ee21844c` (`node --test`, and `scripts/e2e-host.mjs` against its build); both are also in
 `package.json` under `"waterplane"`. It uses the host's 2.0 toolkit instead of its own copies:
 `api.bindConversation` (which conversation a `--continue` launch is — `slots.mjs`), `api.tail` (every
@@ -29,14 +29,18 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | questions | `question.ts` | `ask_user` posed (its `toolCallId`, the `enum` as options); **a pick answered from the phone** by ↑/↓ + Return | S3 re-read: letters typed at the form land in the COMPOSER as a queued prompt — so never a typed answer; S3c: the highlight read off the screen, then arrows + Return in ONE write, and `tool.execution_complete` carried the pick ("User responded: blue"), nothing queued |
 | instructions | plugin dir | `env-file`: the host writes `session:instructions/AGENTS.md`, `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it (S1) | — |
 | ask rules | native | `gate` (the host's answer gate) | Copilot has allow/deny flags, no ask (S2) |
-| context | meter + log | tokens from the usage checkpoint / OTel span; no window | `session/new` names no window (S0) |
+| context | meter + log | tokens from the usage checkpoint / OTel span; **window** = `session.usage_record.usage.maxPromptTokens` of the sample's own model (1.0.98: 272000 for gpt-6-luna = `/context`'s `17k/272k`); **compactions** from `session.compaction_start`/`_complete` | never `model.turn_started.modelInfo`: under Auto it names another model (gpt-4o-mini, 128000) |
 | transcript, delivery, tokens | log | `events.jsonl` + OTel | — |
 | effort | ladder | absent | the flag is `--reasoning-effort`; ignored under Auto (this account); readable per turn from `user.message.responsesReasoning.effort` (S4b) |
-| plan | planbox | absent | settable by `--plan`/`--mode` or Shift+Tab; readable from the footer and `session.mode_changed` (S4b) |
-| usage | `/usage` | absent here | the in-repo `copilot-usage` extension already registers source `copilot` (backend `copilot`) from the same account; a second source would count it twice |
+| plan | planbox | `exit_plan_mode` call posed (text = the session's `plan.md`, else the summary), closed by its completion / `abort`; approve = `2` (Accept, continue in Interactive = Manual Approval; a digit commits, measured) | keep planning ("4. Suggest changes") unmeasured: refused in words |
+| mode | footer | `session.mode_changed` (written AT each Shift+Tab once the log exists): interactive = `default`, plan = `plan`, autopilot = unknown (null); `set` = one Shift+Tab toward default/plan | the other modes are launch flags only |
+| commands | claude's set | `copilot help commands` (no model call), once per CLI version; `local` measured for `/context`, `/fork` (true) and `/compact`, `/fleet` (false), the rest from the help text; `/autopilot /changelog /rename /pr /chronicle /share /move` unclassified | — |
+| spend (session) | log | `session.usage_checkpoint` running total: tokens, AI credits as `native`; subagents' tokens split out by their `agentId` usage records (exact to the token); no dollars | credits are not stated per subagent |
+| usage | `/usage` | names source `copilot` (the in-repo `copilot-usage` extension's reading; this plugin never reads the account): the host keeps ONE registration per source for a backend (usmc `usagesources.ts`, `yields`) | no wall: no exhaustion text seen yet |
 | limits | `limit.ts` | absent | no stated CLI wall signal measured |
 | conversations | store | source: list + remove (`conversations.mjs`). List: every `<home>/session-state/<uuid>/` whose `workspace.yaml` `cwd` (or `session.start`'s) is the repo (realpath), once it has an `events.jsonl` — **every Copilot session for that folder, plain-terminal ones included**, each resumable with `--session-id`; title = `workspace.yaml` `name`, first prompt off the log's first 64 KiB, newest first, capped at 200. Remove: that one dir, refused in words for a bad id, a dir outside `session-state` once symlinks resolve, another folder, a synced to GitHub (`mc_task_id`/`mc_session_id`; Copilot's own delete also removes the synced copy) session, one a Copilot process holds (lock or process log) or one this host has open | delete safety below |
-| agents, fork | store | absent | no measured list; no fork flag (S5) |
+| agents | store | `subagent.started`/`completed`/`failed` (top-level `agentId`, `agentDisplayName`) | — |
+| fork | store | absent | `/fork` is in-session only: it writes a new dir and `session.info {infoType:"fork"}` names the new id, and **the live TUI continues as the fork** (hooks then carry the new id) — a plugin never types it |
 
 **Conversation delete safety (measured on 1.0.91, `~/.copilot`, 400 session dirs).** Copilot's own
 delete (the sessions dialog, `sessionsApi.delete`) removes exactly the session directory; `session-store.db`
@@ -210,6 +214,35 @@ request**.
 | effort observable | yes, per turn: `user.message.responsesReasoning.effort` (+ `initialEffort`, `model`). Older non-Auto sessions in `~/.copilot/session-state` (read only) also carry `session.start.reasoningEffort`, `session.model_change.reasoningEffort`, the checkpoint's `promptCacheBreakState…reasoning_effort` / `session_mode`, and a ladder `reasoning_effort: ["none","low","medium","high","xhigh"]` on `model.turn_started` — none of those appeared on this Auto turn |
 | effort settable | **not shown on this account**: Auto ignored `low`. Whether an explicit model honours the flag needs a non-Auto model, which Copilot Free does not offer |
 | plan turn behaviour | under `--plan` the model opened an `ask_user` form ("Reply ok only" / "Create a plan…") instead of answering; the turn never ended, so no `session.usage_checkpoint` was read in S4b |
+
+## Measured on 1.0.98 (contract 2.2 slots, 2026-10-23)
+
+Copilot 1.0.98 is the newest release past the 7-day release-age rule (1.0.99+ were younger). It is a
+standalone binary installed BESIDE the Homebrew cask, never over it: the release's
+`copilot-darwin-arm64.tar.gz` (SHA-256 checked against `SHA256SUMS.txt`) unpacked to
+`~/.local/share/copilot-cli/1.0.98/copilot`; point the daemon at it with `COPILOT_CLI_BIN`. Pinned: the
+plugin always launches with `COPILOT_AUTO_UPDATE=false`, under which the launcher runs its BUILT-IN
+version (measured: the 1.0.91 cask binary stays 1.0.91 with 1.0.98 in the package cache; the 1.0.98
+binary stays 1.0.98). Undo = unset `COPILOT_CLI_BIN`, delete that dir and
+`~/Library/Caches/copilot/pkg/darwin-arm64/1.0.98`. Side effect: the first run unpacked 1.0.98 into
+that cache, so a plain-terminal `copilot` with auto-update on (newest cached) now runs 1.0.98 too.
+
+One live session in a private tmux server, isolated `COPILOT_HOME`, Auto (`--model auto
+--auto-tier efficiency`), the generated hooks dir posting to a local sink. Quota (`gh api
+/copilot_internal/user`, chat): 189.6 before, 188.6 after — **1.0 AIC for 4 prompts** (smoke,
+`/compact`, a plan, `/fleet`). Events: `test/fixtures/copilot-1.0.98/` (redacted), replayed by
+`test/v22.test.mjs`.
+
+| probe | result |
+|---|---|
+| smoke | hooks `userPromptSubmitted` → `sessionStart` → `agentStop`, checkpoint after, as on 1.0.91 |
+| window | `/context`: `gpt-6-luna · 17k/272k`; `usage_record.maxPromptTokens` 272000 and `compaction_start.tokenLimit` 272000 agree; `model.turn_started` said gpt-4o-mini 128000 (wrong model under Auto) |
+| `/compact` | `session.compaction_start {currentTokens 16887, tokenLimit, trigger "manual"}`, `session.compaction_complete {success, preCompactionTokens 45, postCompactionTokens 309}` (conversation only), `preCompact` hook; one model call, no usage_record for it (the checkpoint counts it) |
+| plan | Shift+Tab → `session.mode_changed`; the turn wrote `plan.md` and called `exit_plan_mode {summary}`; dialog rows: 1 Accept → Autopilot, 2 Accept → Interactive, 3 Exit without running, 4 Suggest changes; `2` → `session.mode_changed plan→interactive`, `human_response.recorded {responseKind exit_plan_mode, planContent}`, the call completed "Plan approved!" |
+| mode cycle | three Shift+Tabs: three `session.mode_changed` lines at once, footer `Plan` / `Autopilot` / `Interactive` |
+| `/fork` | no model call; new dir + `session.info {infoType:"fork"}` naming the new id; later hooks carry the FORK's id |
+| `/fleet` | `subagent.started` ×2 / `subagent.completed` ×2 in the log, `subagentStart`/`subagentStop` hooks (parent's sessionId, `agentId`), each subagent also fires `userPromptSubmitted`/`agentStop` under its OWN id; checkpoint includes the subagents |
+| wall | not seen (quota never ran out). Capture when it does: the screen text and any `session.error`/`session.warning`/`model.turn_failed` line |
 
 ## Measured on 1.0.91 — fix/known-limits
 
