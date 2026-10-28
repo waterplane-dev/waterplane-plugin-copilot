@@ -12,7 +12,12 @@
  * `content` and `toolRequests[{toolCallId,name,arguments}]`;
  * `tool.execution_complete` has `toolCallId`, `success`, `result.content`.
  * Turns group by `interactionId` (one per prompt) — never by `assistant.turn_*`
- * (one per model step). 154 event types exist in 1.0.91: every type not named
+ * (one per model step). `subagent.started`/`completed`/`failed` (top-level `agentId`,
+ * `data.toolCallId` = the `task` call) give a turn's `agentTypes` and `agentsRunning`; a running
+ * agent whose newest event of ANY type is over 10 min old reads as ended (a killed CLI writes no
+ * ending). No token/cost/model fields per turn, on purpose: `session.usage_record` carries no
+ * turn link and its `parentId` chain breaks after a subagent completes. 154 event types exist in
+ * 1.0.91: every type not named
  * above (`model.*`, `hook.*`, `system.message`, …) is ignored, a line that does
  * not parse is skipped, and a known type with a field of an unexpected shape
  * contributes nothing rather than throwing.
@@ -25,6 +30,7 @@ import { existsSync, statSync } from "node:fs";
 import { eventsPath, sessionDir, SESSION_ID_RE } from "./paths.mjs";
 import { follow } from "./jsonl.mjs";
 
+const AGENT_STALE_MS = 600000;
 const LABEL_MAX = 120;
 const PROMPT_LABEL_MAX = 80;
 const INPUT_MAX = 2000;
@@ -57,10 +63,12 @@ const pretty = (v) => {
 };
 
 /** The incremental fold. `push(event)` per parsed line; `turns()` the current document body. */
-export function foldEvents() {
+export function foldEvents({ now = Date.now } = {}) {
   const turns = [];                    // in order of first user.message
   const byInteraction = new Map();     // interactionId → turn
   const toolOf = new Map();            // toolCallId → { turn, block }
+  const agents = new Map();            // agentId → { turn, ended, last }
+  const lastSeen = new Map();          // agentId → newest event time (any type)
   const users = [];                    // every user.message, for the delivery source
   let last = null;                     // the newest turn, for events that name no interaction
 
@@ -73,6 +81,12 @@ export function foldEvents() {
     const block = { kind: "tool", id, name: name || "tool", label: toolLabel(name, args), input: pretty(args) };
     t.blocks.push(block);
     toolOf.set(id, { turn: t, block });
+    if (name === "task") {
+      const type = str(args?.agent_type)?.trim() || "(no type)";
+      const list = (t.agentTypes ??= []);
+      const row = list.find((x) => x.type === type);
+      if (row) row.n++; else list.push({ type, n: 1 });
+    }
     return block;
   }
 
@@ -80,6 +94,8 @@ export function foldEvents() {
     if (!ev || typeof ev !== "object" || typeof ev.type !== "string") return;
     const d = ev.data && typeof ev.data === "object" ? ev.data : {};
     const at = ms(ev.timestamp);
+    const aid = str(ev.agentId);
+    if (aid && at != null && at > (lastSeen.get(aid) ?? 0)) lastSeen.set(aid, at);
     switch (ev.type) {
       case "user.message": {
         const text = str(d.content);
@@ -133,6 +149,17 @@ export function foldEvents() {
         touch(e.turn, at);
         return;
       }
+      case "subagent.started": {
+        const e = toolOf.get(str(d.toolCallId));
+        if (aid && e) agents.set(aid, { turn: e.turn, ended: false });
+        return;
+      }
+      case "subagent.completed":
+      case "subagent.failed": {
+        const a = aid && agents.get(aid);
+        if (a) a.ended = true;
+        return;
+      }
       case "assistant.turn_end":
         touch(last, at);
         return;
@@ -143,6 +170,14 @@ export function foldEvents() {
 
   /** The turns, finished: counts, files, summary. `detail` "lite" withholds each tool's input and result. */
   function doc(detail) {
+    const t0 = now();
+    const running = new Map();
+    for (const [aid, a] of agents) {
+      if (a.ended) continue;
+      const seen = lastSeen.get(aid);
+      if (seen == null || t0 - seen > AGENT_STALE_MS) continue; // undated: no proof it still runs
+      running.set(a.turn, (running.get(a.turn) ?? 0) + 1);
+    }
     const out = turns.map((t) => {
       const blocks = t.blocks.map((b) => {
         if (b.kind !== "tool") return { ...b };
@@ -165,6 +200,8 @@ export function foldEvents() {
       const lastText = [...t.blocks].reverse().find((b) => b.kind === "text");
       return {
         ...t, blocks, toolCount: tools.length, files: [...files],
+        ...(t.agentTypes ? { agentTypes: t.agentTypes.map((x) => ({ ...x })) } : {}),
+        ...(running.get(t) ? { agentsRunning: running.get(t) } : {}),
         ...(lastText ? { summary: oneLine(lastText.text, 140) } : {}),
       };
     });

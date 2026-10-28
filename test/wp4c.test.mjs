@@ -262,3 +262,37 @@ test("a --continue session's id comes through idOf (the router slot)", () => {
     assert.equal(createContextSource({ tail: fakeTail, otelDir: w.otelDir, idOf }).sample(bare).usedTok, 15533);
   } finally { w.done(); }
 });
+
+const FLEET = new URL("./fixtures/copilot-1.0.98/probe-fork-fleet-1098.jsonl", import.meta.url).pathname;
+const fleetLines = readFileSync(FLEET, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const fleetTurn = (f) => f.doc("full").find((t) => t.agentTypes);
+
+test("fold: the turn that started two task calls counts them by type, none running once completed", () => {
+  const f = foldEvents({ now: () => Date.parse("2026-10-23T06:32:00Z") });
+  for (const e of fleetLines) f.push(e);
+  const t = fleetTurn(f);
+  assert.deepEqual(t.agentTypes, [{ type: "general-purpose", n: 2 }]);
+  assert.equal(t.agentsRunning, undefined);
+  assert.equal(f.doc("lite").find((x) => x.agentTypes).agentTypes[0].n, 2);
+  assert.equal(f.doc("full").filter((x) => !x.agentTypes && x.agentsRunning === undefined).length, f.doc("full").length - 1);
+});
+
+test("fold: started with no ending reads running within 10 min, ended after (a killed CLI writes none)", () => {
+  const cut = fleetLines.filter((e) => e.type !== "subagent.completed" && e.type !== "subagent.failed");
+  const lastAt = Math.max(...cut.filter((e) => e.agentId).map((e) => Date.parse(e.timestamp)));
+  for (const [dt, want] of [[5 * 60000, 2], [11 * 60000, undefined]]) {
+    const f = foldEvents({ now: () => lastAt + dt });
+    for (const e of cut) f.push(e);
+    assert.equal(fleetTurn(f).agentsRunning, want);
+    assert.deepEqual(fleetTurn(f).agentTypes, [{ type: "general-purpose", n: 2 }]);
+  }
+});
+
+test("fold: a subagent.started on no turn is ignored", () => {
+  const f = foldEvents({ now: () => 0 });
+  f.push({ type: "user.message", data: { content: "hi", interactionId: "i1" } });
+  f.push({ type: "subagent.started", agentId: "a1", timestamp: "2026-10-01T10:00:00Z", data: { toolCallId: "nope" } });
+  const t = f.doc("full")[0];
+  assert.equal(t.agentsRunning, undefined);
+  assert.equal(t.agentTypes, undefined);
+});
