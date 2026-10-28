@@ -36,6 +36,8 @@ const localDay = (t) => {
   const d = new Date(t);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+const localHour = (t) => { const d = new Date(t); d.setMinutes(0, 0, 0); return d.getTime(); };
+const HOURLY_KEEP_MS = 45 * 24 * 3_600_000;
 const add = (m, k, v) => { if (v) m[k] = (m[k] ?? 0) + v; };
 
 /** The token kinds of one chat span, Copilot's own split. */
@@ -97,7 +99,7 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
     for (const c of chats) if (c.conv) launched.add(c.conv);
 
     // credits (or premium requests) per local day, from checkpoint deltas
-    const perDay = {}, turnsDay = {};
+    const perDay = {}, turnsDay = {}, unitHour = new Map();
     let credits = 0, creditSeen = false, premium = 0, premiumSeen = false, creditTurns = 0;
     let first = null, last = null;
     const stamp = (t) => { if (t != null) { first = first == null ? t : Math.min(first, t); last = last == null ? t : Math.max(last, t); } };
@@ -114,6 +116,7 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
         prev = total;
         const day = localDay(c.at);
         perDay[day] = (perDay[day] ?? 0) + delta;
+        if (c.at != null) { const h = localHour(c.at); unitHour.set(h, (unitHour.get(h) ?? 0) + delta); }
         turnsDay[day] = (turnsDay[day] ?? 0) + 1;
         creditTurns++;
         if (nanoUsed) { credits += delta; creditSeen = true; } else { premium += delta; premiumSeen = true; }
@@ -123,6 +126,7 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
 
     // tokens per day and model, from the chat spans
     const tot = {}, days = new Map(), models = new Map();
+    const kindsHour = new Map();
     const interactions = new Set(), dayInter = new Map(), modelInter = new Map();
     let tokenCalls = 0;
     for (const c of chats) {
@@ -135,6 +139,11 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
       for (const [n, v] of Object.entries(k)) add(tot, n, v);
       const key = c.interaction ?? `call${tokenCalls}`;
       interactions.add(key);
+      if (c.at != null) {
+        const h = localHour(c.at);
+        const hk = kindsHour.get(h) ?? kindsHour.set(h, {}).get(h);
+        for (const [n, v] of Object.entries(k)) add(hk, n, v);
+      }
       if (day) {
         const d = days.get(day) ?? { day, kinds: {}, turns: 0 };
         for (const [n, v] of Object.entries(k)) add(d.kinds, n, v);
@@ -162,6 +171,16 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
     for (const day of Object.keys(perDay)) if (!dayRows.has(day)) dayRows.set(day, { day, kinds: {}, turns: turnsDay[day] });
     const unitName = creditSeen ? "AI credits" : premiumSeen ? "premium requests" : null;
     const round = (v) => Math.round(v * 1e6) / 1e6;
+    // hourly: the same bucket as localDay, ascending, only active hours, at most 45 days kept
+    const cutHour = localHour(now() - HOURLY_KEEP_MS);
+    const hours = [...new Set([...kindsHour.keys(), ...(unitName ? unitHour.keys() : [])])].filter((h) => h >= cutHour).sort((a, b) => a - b);
+    const hourly = hours.length ? {
+      from: Math.min(...[...kindsHour.keys(), ...(unitName ? unitHour.keys() : [])]) < cutHour ? cutHour : hours[0],
+      rows: hours.map((hour) => ({
+        hour, kinds: kindsHour.get(hour) ?? {},
+        ...(unitName && unitHour.has(hour) ? { unit: round(unitHour.get(hour)) } : {}),
+      })),
+    } : null;
     return {
       available: true,
       totals: { kinds: tot, turns: tokenCalls ? interactions.size : creditTurns },
@@ -169,6 +188,7 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
       models: [...models.values()].sort((a, b) => (b.kinds.output ?? 0) + (b.kinds.input ?? 0) - ((a.kinds.output ?? 0) + (a.kinds.input ?? 0))),
       sessions: sessionIds.size,
       ...(unitName ? { unit: { name: unitName, perDay: Object.fromEntries(Object.entries(perDay).map(([d, v]) => [d, round(v)])) } } : {}),
+      ...(hourly ? { hourly } : {}),
       firstAt: first, lastAt: last, scannedAt: now(),
     };
   }

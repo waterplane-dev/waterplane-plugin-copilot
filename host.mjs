@@ -59,6 +59,7 @@ export const CAPS = Object.freeze({
   slash: "none",
   permissionModes: PERMISSION_MODES,
   remoteControl: false,
+  spendUnit: "AI credits", // = sessionlog.mjs's native.unit (API 2.3; an older host ignores it)
 });
 
 /**

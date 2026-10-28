@@ -296,3 +296,71 @@ test("fold: a subagent.started on no turn is ignored", () => {
   assert.equal(t.agentsRunning, undefined);
   assert.equal(t.agentTypes, undefined);
 });
+
+// ---- hourly (plugin API 2.3): the ledger's hours, the same local bucket as `days` ----
+function synthWorld(cps, spans) {
+  const home = mkdtempSync(join(tmpdir(), "copilot-hourly-"));
+  const dir = join(home, "session-state", ID);
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(join(home, "otel"));
+  writeFileSync(join(dir, "events.jsonl"), cps.map(([t, nano]) => JSON.stringify({ type: "session.usage_checkpoint", timestamp: new Date(t).toISOString(), data: { totalNanoAiu: nano } })).join("\n") + "\n");
+  const span = ([t, input, output]) => JSON.stringify({ type: "span", name: "chat", endTime: [Math.floor(t / 1000), (t % 1000) * 1e6], attributes: {
+    "gen_ai.operation.name": "chat", "gen_ai.conversation.id": ID, "github.copilot.interaction_id": `i${t}`, "gen_ai.response.model": "m",
+    "gen_ai.usage.input_tokens": input, "gen_ai.usage.output_tokens": output } });
+  writeFileSync(join(home, "otel", `${ID}.jsonl`), spans.map(span).join("\n") + (spans.length ? "\n" : ""));
+  return { home, otelDir: join(home, "otel"), done: () => rmSync(home, { recursive: true, force: true }) };
+}
+const hourStart = (t) => { const d = new Date(t); d.setMinutes(0, 0, 0); return d.getTime(); };
+const dayOf = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+
+test("ledger hourly: rows cross an hour and a day edge, kinds match the day rows, unit sums to perDay", async () => {
+  const t1 = new Date(2026, 9, 1, 10, 59, 30).getTime(), t2 = new Date(2026, 9, 1, 11, 0, 5).getTime();
+  const t3 = new Date(2026, 9, 1, 23, 59, 59).getTime(), t4 = new Date(2026, 9, 2, 0, 0, 1).getTime();
+  const w = synthWorld(
+    [[t1, 1e9], [t2, 2.5e9], [t3, 4e9], [t4, 4.25e9]],
+    [[t1, 100, 10], [t2, 200, 20], [t4, 50, 5]]);
+  try {
+    const doc = await createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir, now: () => t4 + 3_600_000 }).ledger(0);
+    const h = doc.hourly;
+    assert.deepEqual(h.rows.map((r) => r.hour), [t1, t2, t3, t4].map(hourStart).filter((x, i, a) => a.indexOf(x) === i));
+    assert.equal(h.from, h.rows[0].hour);
+    assert.ok(h.rows.every((r, i) => i === 0 || h.rows[i - 1].hour < r.hour), "ascending");
+    for (const r of h.rows) assert.equal(r.hour, hourStart(r.hour));
+    const unitOf = (t) => h.rows.find((r) => r.hour === hourStart(t)).unit;
+    assert.ok(Math.abs(unitOf(t1) - 1) < 1e-9);
+    assert.ok(Math.abs(unitOf(t4) - 0.25) < 1e-9);
+    // kinds per hour sum to the day's kinds
+    for (const d of doc.days) {
+      const sum = {};
+      for (const r of h.rows) if (dayOf(r.hour) === d.day) for (const [k, v] of Object.entries(r.kinds)) sum[k] = (sum[k] ?? 0) + v;
+      assert.deepEqual(sum, d.kinds, `kinds of ${d.day}`);
+    }
+    // unit over a day equals perDay
+    for (const [day, v] of Object.entries(doc.unit.perDay)) {
+      const s = h.rows.filter((r) => dayOf(r.hour) === day).reduce((a, r) => a + (r.unit ?? 0), 0);
+      assert.ok(Math.abs(s - v) < 1e-5, `${day}: hourly ${s} vs perDay ${v}`);
+    }
+  } finally { w.done(); }
+});
+
+test("ledger hourly: keeps 45 days, `from` is the cut's hour when older rows were dropped", async () => {
+  const now = new Date(2026, 9, 28, 12, 30).getTime();
+  const old = now - 50 * 86_400_000, inside = now - 10 * 86_400_000;
+  const w = synthWorld([[old, 1e9], [inside, 3e9]], [[old, 10, 1], [inside, 20, 2]]);
+  try {
+    const doc = await createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir, now: () => now }).ledger(0);
+    assert.deepEqual(doc.hourly.rows.map((r) => r.hour), [hourStart(inside)]);
+    assert.equal(doc.hourly.from, hourStart(now - 45 * 86_400_000));
+    assert.ok(Object.keys(doc.unit.perDay).includes(dayOf(old)), "perDay still counts the old day");
+    const young = await createLedger({ tail: fakeTail, home: w.home, otelDir: w.otelDir, now: () => old + 86_400_000 }).ledger(0);
+    assert.equal(young.hourly.from, young.hourly.rows[0].hour, "younger than the cut: from = earliest row");
+  } finally { w.done(); }
+});
+
+test("caps: spendUnit equals the session's native unit", async () => {
+  const { CAPS } = await import("../host.mjs");
+  const { readFileSync: rf } = await import("node:fs");
+  assert.equal(CAPS.spendUnit, "AI credits");
+  assert.match(rf(new URL("../sessionlog.mjs", import.meta.url), "utf8"), /unit: "AI credits"/);
+  assert.equal(JSON.parse(rf(new URL("../package.json", import.meta.url), "utf8")).waterplane.apiVersion, "2.2");
+});
