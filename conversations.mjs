@@ -22,6 +22,9 @@ import { liveHolder, logHolder, SESSION_ID_RE, workspaceFields } from "./paths.m
 export const LIST_LIMIT = 200;
 /** Only the head of `events.jsonl` is read for a listing: the first prompt is near the top. */
 export const HEAD_BYTES = 64 * 1024;
+/** …but after a `system.message` that grows with custom instructions (45-53 KB measured), so the
+ *  head grows in HEAD_BYTES steps until a `user.message` line is in it, up to this bound. */
+export const HEAD_MAX = 1024 * 1024;
 const PROMPT_MAX = 120;
 
 const oneLine = (s, max) => {
@@ -34,16 +37,25 @@ const real = async (p) => {
   try { return await realpath(p); } catch { return p; }
 };
 
-/** The complete JSON lines in the first `HEAD_BYTES` of a file (a cut last line is dropped). */
+/** The complete JSON lines in the head of a file — through the first `user.message` line, within
+ *  HEAD_MAX (a cut last line is dropped). */
 async function headLines(path) {
   let fh;
   try { fh = await open(path, "r"); } catch { return []; }
   try {
-    const buf = Buffer.alloc(HEAD_BYTES);
-    const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0);
-    const text = buf.subarray(0, bytesRead).toString("utf8");
+    let buf = Buffer.alloc(0), full = false;
+    while (buf.length < HEAD_MAX) {
+      const chunk = Buffer.alloc(Math.min(HEAD_BYTES, HEAD_MAX - buf.length));
+      const { bytesRead } = await fh.read(chunk, 0, chunk.length, buf.length);
+      buf = Buffer.concat([buf, chunk.subarray(0, bytesRead)]);
+      if (bytesRead < chunk.length) { full = true; break; }
+      // Raw-byte test: the big line need not parse to know the prompt is not in yet.
+      const cut = buf.lastIndexOf(10);
+      if (cut >= 0 && /"type":\s*"user\.message"/.test(buf.toString("latin1", 0, cut))) break;
+    }
+    const text = buf.toString("utf8");
     const lines = text.split("\n");
-    if (bytesRead === HEAD_BYTES) lines.pop();
+    if (!full) lines.pop();
     const out = [];
     for (const l of lines) {
       if (!l.trim()) continue;

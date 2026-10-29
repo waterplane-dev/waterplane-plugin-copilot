@@ -20,7 +20,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
-import { hookTimeoutSec, parseHookPost, writePluginDir } from "./hooks.mjs";
+import { hookKey, hookTimeoutSec, parseHookPost, sealHookHandler, writePluginDir } from "./hooks.mjs";
 import { DELIVERY } from "./delivery.mjs";
 import { createSlots } from "./slots.mjs";
 import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
@@ -194,14 +194,17 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
 }
 
 /** The backend definition handed to `api.backend`. Exported for tests. */
-export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null }) {
+export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null, home = null }) {
   const tail = (p, on, o) => api.tail(p, on, o);
   const env = (k) => api.env(k);
-  const attach = createAttach(router, { home: () => copilotHome(env) });
-  // A --continue session learns its Copilot id from its first hook, so the id comes off the slot.
-  const home = copilotHome(env);
-  // A slot that followed a /fork reads the FORK's id, not the host record's stale one.
-  const idOf = (ss) => { const sl = router.slotFor(ss); return (sl.forkedFrom ? sl.id : ss.backendSessionId || sl.id) || undefined; };
+  // COPILOT_HOME is resolved ONCE (activate) and every consumer reads that one value: the ledger
+  // and transcript folds take a path, not a getter, so a live read in some sources only would split
+  // them across two homes after a change from the phone. A changed home applies on restart.
+  home ??= copilotHome(env);
+  const attach = createAttach(router, { home });
+  // A --continue session learns its Copilot id from its first hook, so the id comes off the slot;
+  // a slot that followed a /fork reads the FORK's id. Never creates a slot (a read after close).
+  const idOf = (ss) => router.idOf(ss);
   const sessionLog = createSessionLog({ home, idOf, tail });
   router.setForkReader?.((ss) => sessionLog.forkOf(ss));
   const ls = createLogSources(sessionLog);
@@ -262,15 +265,16 @@ export function activate(api) {
   // Option 2 during the hold carries `remember`; a PERSON's tap on it makes the HOST keep the rule
   // (an older host without standing rules gets no option 2 during the hold at all).
   const rulesOn = supportsRules(api);
+  const home = copilotHome((k) => api.env(k));
   const dialogs = createDialogs({
-    router, home: () => copilotHome((k) => api.env(k)), rulesSupported: rulesOn,
+    router, home: () => home, rulesSupported: rulesOn,
     keysThenTyped: () => supportsKeysThenTyped(api), screen: (sid) => api.screen(sid),
     onAnswered: (slot, a) => { if (a.choice === 2 && a.phase === "hook") setImmediate(() => showRules(api, slot)); },
     onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; emitTurn(slot, { edge: "ended", at }); },
   });
   const context = createContextSource({
-    otelDir: join(api.dataDir, "otel"), home: () => copilotHome((k) => api.env(k)),
-    idOf: (ss) => { const sl = router.slotFor(ss); return (sl.forkedFrom ? sl.id : ss.backendSessionId || sl.id) || undefined; },
+    otelDir: join(api.dataDir, "otel"), home: () => home,
+    idOf: (ss) => router.idOf(ss),
     tail: (p, on, o) => api.tail(p, on, o),
   });
   // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may
@@ -286,15 +290,21 @@ export function activate(api) {
     showRules(api, slot);
     return { behavior: "allow" };
   } : null;
-  const handler = makeHookHandler({ router, dialogs, attended, ruleAllows });
+  let showStatus = () => {}; // set below, once the binary is resolved; settings re-say it
+  // A fresh key per activation: the runner reads it at each hook and prints only answers sealed
+  // with it, so a process squatting the sink's port while the daemon is down cannot approve.
+  const handler = sealHookHandler(makeHookHandler({ router, dialogs, attended, ruleAllows }), hookKey(pluginDir, { fresh: true }));
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);
     refreshHooks();
+    // Running sessions keep the hook timeout they launched with: `sealHookHandler` caps each hold
+    // at the wait its own runner names, so a raised holdMs only lengthens new launches' holds.
     api.onHook(handler, { maxHoldMs: holdMs }); // a second registration replaces the first
+    showStatus();
   });
 
-  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context }));
+  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context, home }));
   api.on("action", (e) => {
     if (e.action !== FORGET_ACTION) return { ok: false, message: `unknown action ${e.action}` };
     if (!rulesOn) return { ok: false, message: "This waterplane keeps no allow rules (it is older than standing rules)." };
@@ -307,7 +317,8 @@ export function activate(api) {
 
   api.setupCheck(() => signInRow(copilotSignIn((k) => api.env(k))));
   const bin = resolveBin((k) => api.env(k));
-  api.setStatus(binFound(bin)
+  showStatus = () => api.setStatus(binFound(bin)
     ? { tone: "ok", text: `copilot at ${bin}; hooks time out at ${hookTimeoutSec(holdMs)} s, the phone holds ${holdMs / 1000} s` }
     : { tone: "warn", text: "no copilot on PATH — install GitHub Copilot CLI or set COPILOT_CLI_BIN" });
+  showStatus();
 }

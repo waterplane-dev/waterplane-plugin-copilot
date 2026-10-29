@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writePluginDir } from "../hooks.mjs";
+import { hookKey, sealHookHandler, writePluginDir } from "../hooks.mjs";
 import { startSink } from "./lib-sink.mjs";
 
 const FAKE = fileURLToPath(new URL("../fake/copilot.mjs", import.meta.url));
@@ -19,9 +19,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (f, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const v = f(); if (v) return v; await sleep(50); } return null; };
 
 async function boot(answer, env = {}) {
-  const sink = await startSink(answer);
   const root = mkdtempSync(join(tmpdir(), "copilot-fake-"));
   const home = join(root, "home"); const cwd = join(root, "repo"); const pluginDir = join(root, "plugin");
+  // Sealed as host.mjs seals them: the runner prints only answers proven with the dir's key.
+  const sink = await startSink(answer && ((b) => sealHookHandler(answer, hookKey(pluginDir))(b)));
   mkdirSync(cwd);
   writePluginDir(pluginDir, { node: process.execPath, sink: sink.url, holdMs: 1000 });
   const child = spawn(process.execPath, [FAKE, `--session-id=${ID}`, "--plugin-dir", pluginDir, "--model", "auto"], {

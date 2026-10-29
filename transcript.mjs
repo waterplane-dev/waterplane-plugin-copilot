@@ -15,7 +15,8 @@
  * (one per model step). `subagent.started`/`completed`/`failed` (top-level `agentId`,
  * `data.toolCallId` = the `task` call) give a turn's `agentTypes` and `agentsRunning`; a running
  * agent whose newest event of ANY type is over 10 min old reads as ended (a killed CLI writes no
- * ending). No token/cost/model fields per turn, on purpose: `session.usage_record` carries no
+ * ending), and `updatedAt` moves to that moment so a polling reader re-reads. A subagent's own
+ * messages and tools (1.0.98 logs them here, tagged `agentId`) are not the person's turns: skipped. No token/cost/model fields per turn, on purpose: `session.usage_record` carries no
  * turn link and its `parentId` chain breaks after a subagent completes. 154 event types exist in
  * 1.0.91: every type not named
  * above (`model.*`, `hook.*`, `system.message`, …) is ignored, a line that does
@@ -62,6 +63,17 @@ const pretty = (v) => {
   return s.length > INPUT_MAX ? s.slice(0, INPUT_MAX) + "…" : s;
 };
 
+/** Repo paths a write tool's raw arguments name — read before `pretty` cuts them. apply_patch's
+ *  arguments are the patch text itself (measured 1.0.98): its `*** Add/Update/Delete File:` and
+ *  `*** Move to:` headers name the files. */
+function writtenPaths(name, args) {
+  if (!WRITE_TOOLS.has(String(name).toLowerCase())) return [];
+  const patch = typeof args === "string" ? args : str(args?.input) ?? str(args?.patch);
+  if (patch != null) return [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?)\s*$/gm)].map((m) => m[1]);
+  const p = args && typeof args === "object" ? str(args.path) ?? str(args.filePath) ?? str(args.file_path) : undefined;
+  return p ? [p] : [];
+}
+
 /** The incremental fold. `push(event)` per parsed line; `turns()` the current document body. */
 export function foldEvents({ now = Date.now } = {}) {
   const turns = [];                    // in order of first user.message
@@ -70,6 +82,8 @@ export function foldEvents({ now = Date.now } = {}) {
   const agents = new Map();            // agentId → { turn, ended, last }
   const lastSeen = new Map();          // agentId → newest event time (any type)
   const users = [];                    // every user.message, for the delivery source
+  const written = new Map();           // turn → Set of the paths its write tools named (as written)
+  let root = null;                     // session.start/resume context: gitRoot, else cwd
   let last = null;                     // the newest turn, for events that name no interaction
 
   const turnFor = (iid) => (iid && byInteraction.get(iid)) || last;
@@ -81,6 +95,7 @@ export function foldEvents({ now = Date.now } = {}) {
     const block = { kind: "tool", id, name: name || "tool", label: toolLabel(name, args), input: pretty(args) };
     t.blocks.push(block);
     toolOf.set(id, { turn: t, block });
+    wrote(t, writtenPaths(name, args));
     if (name === "task") {
       const type = str(args?.agent_type)?.trim() || "(no type)";
       const list = (t.agentTypes ??= []);
@@ -90,13 +105,37 @@ export function foldEvents({ now = Date.now } = {}) {
     return block;
   }
 
+  function wrote(t, paths) {
+    if (!paths.length) return;
+    let set = written.get(t);
+    if (!set) written.set(t, (set = new Set()));
+    for (const p of paths) set.add(p);
+  }
+
+  /** Repo-relative when under the session's root; a path outside the repo stays as Copilot wrote it. */
+  const rel = (p) => (root && p.startsWith(root + "/") ? p.slice(root.length + 1) : p);
+
+  /** A tool that will never complete (cancelled permission, `abort`): a result-less false, not "still running". */
+  const cancel = (b) => { if (b.ok === undefined) { b.ok = false; b.result ??= "cancelled"; } };
+
   function push(ev) {
     if (!ev || typeof ev !== "object" || typeof ev.type !== "string") return;
     const d = ev.data && typeof ev.data === "object" ? ev.data : {};
     const at = ms(ev.timestamp);
     const aid = str(ev.agentId);
     if (aid && at != null && at > (lastSeen.get(aid) ?? 0)) lastSeen.set(aid, at);
+    // 1.0.98 writes a subagent's own user/assistant/tool events into this log, tagged `agentId`.
+    // They are the agent's conversation, not the person's: only its `subagent.*` lifecycle (and the
+    // lastSeen above) counts, or its prompt opens a turn that steals `last` from the parent.
+    if (aid && !ev.type.startsWith("subagent.")) return;
     switch (ev.type) {
+      case "session.start":
+      case "session.resume": {
+        const c = d.context && typeof d.context === "object" ? d.context : {};
+        const r = str(c.gitRoot) || str(c.cwd);
+        if (r) root = r.replace(/\/+$/, "");
+        return;
+      }
       case "user.message": {
         const text = str(d.content);
         if (text == null) return;
@@ -146,7 +185,18 @@ export function foldEvents({ now = Date.now } = {}) {
           e.block.result = content.length > RESULT_MAX ? content.slice(0, RESULT_MAX) : content;
           if (content.length > RESULT_MAX) e.block.resultTruncated = true;
         }
+        if (Array.isArray(d.fileEdits)) wrote(e.turn, d.fileEdits.map((x) => str(x?.path)).filter(Boolean));
         touch(e.turn, at);
+        return;
+      }
+      case "permission.completed": {
+        const e = toolOf.get(str(d.toolCallId));
+        if (e && d.result?.kind === "cancelled") cancel(e.block);
+        return;
+      }
+      case "abort": {
+        for (const b of last?.blocks ?? []) if (b.kind === "tool") cancel(b);
+        touch(last, at);
         return;
       }
       case "subagent.started": {
@@ -188,15 +238,7 @@ export function foldEvents({ now = Date.now } = {}) {
         return { ...b };
       });
       const tools = t.blocks.filter((b) => b.kind === "tool");
-      const files = new Set();
-      for (const b of tools) {
-        if (!WRITE_TOOLS.has(String(b.name).toLowerCase())) continue;
-        try {
-          const a = JSON.parse(b.input ?? "{}");
-          const p = str(a.path) ?? str(a.filePath) ?? str(a.file_path);
-          if (p) files.add(p);
-        } catch { /* a truncated input has no path to offer */ }
-      }
+      const files = new Set([...(written.get(t) ?? [])].map(rel));
       const lastText = [...t.blocks].reverse().find((b) => b.kind === "text");
       return {
         ...t, blocks, toolCount: tools.length, files: [...files],
@@ -208,7 +250,24 @@ export function foldEvents({ now = Date.now } = {}) {
     return out;
   }
 
-  return { push, doc, userMessages: () => users.slice(), size: () => turns.length };
+  /**
+   * When the 10-min quiet rule last changed `doc()`'s answer: the newest moment (≤ now) a running
+   * agent went stale, or null. The rule writes nothing to the file, so `updatedAt` (the mtime) alone
+   * would never move and the host would answer "unchanged" to a reader showing the agent running.
+   */
+  function quietAt() {
+    const t0 = now();
+    let q = null;
+    for (const [aid, a] of agents) {
+      const seen = lastSeen.get(aid);
+      if (a.ended || seen == null) continue;
+      const at = seen + AGENT_STALE_MS;
+      if (at <= t0 && (q == null || at > q)) q = at;
+    }
+    return q;
+  }
+
+  return { push, doc, quietAt, userMessages: () => users.slice(), size: () => turns.length };
 }
 
 const MAX_CACHED = 8;
@@ -244,11 +303,14 @@ export function createTranscriptSource({ home, idOf, tail } = {}) {
   const idFor = resolver(home, idOf);
   const foldFor = createFolds(home, tail);
   return {
-    /** mtime of events.jsonl, or null (no id, no file yet). */
+    /** mtime of events.jsonl — or the later moment the quiet rule flipped a running agent — or null. */
     updatedAt(ss) {
       const id = idFor(ss);
       if (!id) return null;
-      try { return Math.floor(statSync(eventsPath(home, id)).mtimeMs); } catch { return null; }
+      let m;
+      try { m = Math.floor(statSync(eventsPath(home, id)).mtimeMs); } catch { return null; }
+      const q = foldFor(id)?.fold.quietAt();
+      return q != null && q > m ? q : m;
     },
     /** The document, or null when this session has no readable event log (the host falls to its history). */
     read(ss, detail = "lite") {
@@ -257,7 +319,8 @@ export function createTranscriptSource({ home, idOf, tail } = {}) {
       const f = foldFor(id);
       if (!f || f.fold.size() === 0) return null;
       const d = detail === "full" ? "full" : "lite";
-      return { turns: f.fold.doc(d), truncated: false, bytes: f.tail.size, updatedAt: Math.floor(f.tail.mtimeMs), detail: d };
+      const m = Math.floor(f.tail.mtimeMs), q = f.fold.quietAt();
+      return { turns: f.fold.doc(d), truncated: false, bytes: f.tail.size, updatedAt: q != null && q > m ? q : m, detail: d };
     },
   };
 }

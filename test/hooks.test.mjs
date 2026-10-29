@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOOK_NAMES, hookTimeoutSec, hooksJson, parseHookPost, PLUGIN_NAME, writePluginDir } from "../hooks.mjs";
+import { HOOK_NAMES, hookKey, hookTimeoutSec, hooksJson, parseHookPost, PLUGIN_NAME, sealHookHandler, writePluginDir } from "../hooks.mjs";
 import { startSink } from "./lib-sink.mjs";
 
 const SAMPLES = new URL("./fixtures/copilot-1.0.91/hook-samples/", import.meta.url);
@@ -55,17 +55,21 @@ test("parseHookPost takes only {hook, payload} with a known hook name", () => {
   assert.equal(parseHookPost([]), null);
 });
 
-test("the generated command posts {hook, payload} with node alone, and prints the sink's answer", async () => {
-  const sink = await startSink((b) => (b?.hook === "permissionRequest" ? { behavior: "allow" } : {}));
+test("the generated command posts {hook, payload} with node alone, and prints the sink's (sealed) answer", async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "copilot-hooks-")), "it's here");
+  const sink = await startSink((b) => sealHookHandler((x) => (x?.hook === "permissionRequest" ? { behavior: "allow" } : {}), hookKey(dir))(b));
   try {
-    const dir = join(mkdtempSync(join(tmpdir(), "copilot-hooks-")), "it's here");
     writePluginDir(dir, { node: process.execPath, sink: sink.url, holdMs: 8000 });
     const hooks = JSON.parse(readFileSync(join(dir, "hooks.json"), "utf8")).hooks;
 
     const r1 = await runHook(hooks.permissionRequest[0].bash, sample("permissionRequest"));
     assert.equal(r1.code, 0);
     assert.deepEqual(JSON.parse(r1.out), { behavior: "allow" });
-    assert.deepEqual(sink.posts[0], { hook: "permissionRequest", payload: JSON.parse(sample("permissionRequest")) });
+    const { challenge, wait, keyed, keyOk, ...post } = sink.posts[0];
+    assert.equal(keyed && keyOk, true);
+    assert.deepEqual(post, { hook: "permissionRequest", payload: JSON.parse(sample("permissionRequest")) });
+    assert.match(challenge, /^[0-9a-f]{32}$/);
+    assert.equal(wait, 9000);
 
     const r2 = await runHook(hooks.agentStop[0].bash, sample("agentStop"));
     assert.equal(r2.code, 0);
@@ -88,10 +92,12 @@ test("a dead sink never blocks Copilot: exit 0, nothing printed, at once", async
 });
 
 test("a sink slower than the runner's wait is abandoned before Copilot's own kill", async () => {
-  const sink = await startSink(() => new Promise((r) => setTimeout(() => r({ behavior: "allow" }), 5000)));
+  const dir = mkdtempSync(join(tmpdir(), "copilot-hooks-"));
+  const late = () => new Promise((r) => setTimeout(() => r({ behavior: "allow" }), 5000));
+  const sink = await startSink((b) => sealHookHandler(late, hookKey(dir))(b)); // sealed: only the wait stops it
   try {
-    const { hookCommand } = await import("../hooks.mjs");
-    const cmd = hookCommand({ node: process.execPath, hook: "permissionRequest", sink: sink.url, waitMs: 800 });
+    const { hookCommand, hookKeyFile } = await import("../hooks.mjs");
+    const cmd = hookCommand({ node: process.execPath, hook: "permissionRequest", sink: sink.url, waitMs: 800, keyFile: hookKeyFile(dir) });
     const r = await runHook(cmd, sample("permissionRequest"));
     assert.equal(r.code, 0);
     assert.equal(r.out, "");

@@ -12,9 +12,10 @@
  * EMPTY catalogue, which the phone renders as the free-text field.
  */
 import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { sessionDir, SESSION_ID_RE } from "./paths.mjs";
+import { join } from "node:path";
+import { sessionDir, SESSION_ID_RE, workspaceCwd } from "./paths.mjs";
 
 // Generous on purpose: the host asks while it boots, and its event loop was
 // measured busy ~24 s then — the reply had arrived but went unread past a 20 s clock.
@@ -55,13 +56,18 @@ export function catalogueOf(result) {
 export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS, spawnFn = spawn }) {
   const empty = { aliases: [], ids: [] };
   return new Promise((resolve) => {
+    // a cwd of its own: a session the probe opened is then provably the probe's (see sweep)
+    let cwd;
+    try { cwd = mkdtempSync(join(tmpdir(), "wp-copilot-models-")); } catch { cwd = tmpdir(); }
+    const own = cwd !== tmpdir();
+    const dropCwd = () => { if (own) try { rmSync(cwd, { recursive: true, force: true }); } catch { /* left behind */ } };
     let child;
     try {
       child = spawnFn(bin, ["--acp", "--stdio"], {
-        cwd: tmpdir(), stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, ...env },
+        cwd, stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, ...env },
       });
-    } catch { resolve(empty); return; }
-    let done = false;
+    } catch { dropCwd(); resolve(empty); return; }
+    let done = false, asked = false;
     let sessionId = null;
     // The answer goes back at once; the child is stopped after its close
     // (or a grace), and the session dir is removed only once it has EXITED,
@@ -70,8 +76,22 @@ export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS,
       if (!sessionId || !home || !SESSION_ID_RE.test(sessionId)) return;
       try { rmSync(sessionDir(home, sessionId), { recursive: true, force: true }); } catch { /* left behind */ }
     };
+    // timed out after session/new went out and before its reply: no id, but Copilot may already
+    // have made the dir — remove only one whose workspace.yaml names this probe's own temp cwd
+    const sweep = () => {
+      if (sessionId || !asked || !own || !home) return;
+      const cwds = new Set([cwd]);
+      try { cwds.add(realpathSync(cwd)); } catch { /* gone */ }
+      let ids = [];
+      try { ids = readdirSync(join(home, "session-state")); } catch { return; }
+      for (const id of ids) {
+        if (!SESSION_ID_RE.test(id)) continue;
+        const dir = sessionDir(home, id);
+        if (cwds.has(workspaceCwd(dir))) try { rmSync(dir, { recursive: true, force: true }); } catch { /* left behind */ }
+      }
+    };
     let exited = false;
-    child.on("exit", () => { exited = true; removeSession(); finish(empty); });
+    child.on("exit", () => { exited = true; removeSession(); sweep(); dropCwd(); finish(empty); });
     const stop = () => {
       try { child.stdin.end(); } catch { /* gone */ }
       if (!exited) try { child.kill(); } catch { /* gone */ }
@@ -85,7 +105,7 @@ export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS,
     };
     const timer = setTimeout(() => { finish(empty); stop(); }, timeoutMs);
     const send = (o) => { try { child.stdin.write(JSON.stringify(o) + "\n"); } catch { finish(empty); } };
-    child.on("error", () => finish(empty));
+    child.on("error", () => { if (!exited) dropCwd(); finish(empty); }); // a spawn that failed never exits
     child.stdin.on("error", () => finish(empty));
     let buf = "";
     child.stdout.on("data", (d) => {
@@ -99,8 +119,15 @@ export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS,
         if (m.id === 1) {
           if (done) return; // timed out: open no session nobody will close
           if (m.error) { finish(empty); return; }
-          send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: tmpdir(), mcpServers: [] } });
+          asked = true;
+          send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd, mcpServers: [] } });
         } else if (m.id === 2) {
+          if (done) {
+            // the reply came after the timeout: still remove the session it opened, never close it
+            const late = m.result?.sessionId;
+            if (!sessionId && typeof late === "string") { sessionId = late; if (exited) removeSession(); }
+            return;
+          }
           if (m.error) { finish(empty); return; }
           sessionId = typeof m.result?.sessionId === "string" ? m.result.sessionId : null;
           finish(catalogueOf(m.result));

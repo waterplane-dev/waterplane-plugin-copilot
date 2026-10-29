@@ -55,8 +55,22 @@ export function workspaceFields(dir) {
   let text;
   try { text = readFileSync(p, "utf8"); } catch { return null; }
   const out = {};
-  for (const m of text.matchAll(/^([a-z_]+):[ \t]*(.*)$/gm)) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
+  for (const m of text.matchAll(/^([a-z_]+):[ \t]*(.*)$/gm)) out[m[1]] = yamlScalar(m[2].trim());
   return out;
+}
+
+const YAML_ESC = { "0": "\0", a: "\x07", b: "\b", t: "\t", "\t": "\t", n: "\n", v: "\v", f: "\f", r: "\r", e: "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", N: "\x85", _: "\xa0", L: "\u2028", P: "\u2029" };
+
+/** One flow scalar, unquoted: a name with `: ` or a `"` is written quoted, with YAML's escapes. */
+function yamlScalar(v) {
+  if (v.length >= 2 && v[0] === "'" && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  if (v.length >= 2 && v[0] === '"' && v.endsWith('"')) {
+    return v.slice(1, -1).replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (all, e) => {
+      if (/^[xuU]/.test(e)) { try { return String.fromCodePoint(parseInt(e.slice(1), 16)); } catch { return all; } }
+      return YAML_ESC[e] ?? all;
+    });
+  }
+  return v.replace(/^["']|["']$/g, ""); // an unbalanced quote: as before, stripped
 }
 
 /** `workspace.yaml`'s `cwd:` line, or null. */

@@ -93,7 +93,10 @@ export function resolveBin(env = (k) => process.env[k], path = process.env.PATH 
 
 /** True when `resolveBin` found something it can run (an override is believed). */
 export function binFound(bin) {
-  return isAbsolute(bin) ? executable(bin) : false;
+  if (isAbsolute(bin)) return executable(bin);
+  // A bare name (COPILOT_CLI_BIN=copilot-dev) is what spawn resolves through PATH.
+  if (!bin || bin.includes("/") || bin.includes("\\")) return false;
+  return (process.env.PATH ?? "").split(delimiter).some((dir) => dir && isAbsolute(dir) && executable(join(dir, bin)));
 }
 
 /**

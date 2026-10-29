@@ -6,7 +6,14 @@
  *   mode        `session.mode_changed {previousMode, newMode}` — written AT the Shift+Tab once the
  *               session has an events.jsonl (measured: three presses, three lines, cycle
  *               interactive → plan → autopilot → interactive). interactive ⇒ "default",
- *               plan ⇒ "plan", autopilot ⇒ null (no PermissionMode is faithful to it).
+ *               plan ⇒ "plan", autopilot ⇒ "bypassPermissions" (the nearest PermissionMode, read so the
+ *               phone sees it and can step out of it; Copilot's permissions are their own axis,
+ *               `/permissions` / `/allow-all`, so `set` never presses INTO it). Also each main-agent
+ *               `user.message.agentMode` / `permission.requested.agentMode` (same names, the mode it
+ *               ran in; a prompt's is absent in interactive and autopilot is unmeasured, so an
+ *               absent one says nothing). A new process on the same log (`session.start` / `session.resume`, neither
+ *               names a mode) or a `session.shutdown` makes it unknown again until the next of those
+ *               lines; a /fork's own resume (right after "Forked from") is the same TUI and keeps it.
  *   window      `session.usage_record.usage.maxPromptTokens` for the model that call used — the
  *               number Copilot's own `/context` prints ("gpt-6-luna · 17k/272k") and
  *               `session.compaction_start.tokenLimit` repeats. NOT `model.turn_started.modelInfo`:
@@ -25,25 +32,33 @@
  *   plan        `tool.execution_start` of tool `exit_plan_mode` (posed; the plan file is
  *               `<session-state>/<id>/plan.md`), closed by that call's `tool.execution_complete`,
  *               an `abort`, or `human_response.recorded {responseKind: "exit_plan_mode"}`.
+ *   runs        events.jsonl is appended across process runs (1.0.91: three `session.shutdown`,
+ *               two `session.resume` in one file). A shutdown/resume/start closes what the old
+ *               process left open: the posed plan (its dialog died with the TUI) and running
+ *               subagents (ended at that line's time).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { follow } from "./jsonl.mjs";
 import { eventsPath, SESSION_ID_RE } from "./paths.mjs";
 
-const WANT = ["session.info", "session.mode_changed", "session.compaction_", "session.usage_record", "session.usage_checkpoint",
+const WANT = ["session.info", "session.mode_changed", "session.start", "session.resume", "session.shutdown", "\"agentMode\"", "session.compaction_", "session.usage_record", "session.usage_checkpoint",
   "subagent.", "exit_plan_mode", "tool.execution_complete", "\"abort\""];
 const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 const ts = (e) => { const t = Date.parse(e?.timestamp); return Number.isFinite(t) ? t : undefined; };
 
-/** Copilot's mode name → the PermissionMode it is, or null (autopilot: none is faithful). */
+/** Shift+Tab's cycle, measured (probe-main-1098 06:30:35–39). */
+export const MODE_CYCLE = Object.freeze(["interactive", "plan", "autopilot"]);
+
+/** Copilot's mode name → the PermissionMode it reads as, or null (unknown). Autopilot runs without
+ *  asking, so it reads as the most permissive mode rather than hiding behind null. */
 export function modeOf(name) {
-  return name === "interactive" ? "default" : name === "plan" ? "plan" : null;
+  return name === "interactive" ? "default" : name === "plan" ? "plan" : name === "autopilot" ? "bypassPermissions" : null;
 }
 
 export function emptyFold() {
   return { mode: null, windows: new Map(), lastModel: null, compactions: [], pending: null, checkpoint: null,
-    agentRecs: [], agents: new Map(), plan: null, planClosed: null, forkTo: null };
+    agentRecs: [], agents: new Map(), plan: null, planClosed: null, forkTo: null, forkedIn: false };
 }
 
 /** Apply one events.jsonl record to a fold (exported for tests: replay a fixture). */
@@ -57,11 +72,40 @@ export function applyEvent(f, e) {
       const m = d.infoType === "fork" && typeof d.message === "string" && d.message.startsWith("Forked this session into")
         ? /\(([0-9a-fA-F-]{36})\)\.?\s*$/.exec(d.message) : null;
       if (m && SESSION_ID_RE.test(m[1])) f.forkTo = m[1].toLowerCase();
+      // A fork's log COPIES its parent's history (fork lines included) and then says "Forked from":
+      // whatever came before is the parent's, not a fork this session made.
+      else if (d.infoType === "fork") {
+        f.forkTo = null;
+        // …and its `session.resume` right after is the same TUI going on under the new id (measured:
+        // 2 ms apart, the parent's last Shift+Tab copied just before): the mode carries over.
+        if (typeof d.message === "string" && d.message.startsWith("Forked from")) f.forkedIn = true;
+      }
       break;
     }
     case "session.mode_changed":
       if (typeof d.newMode === "string") f.mode = d.newMode;
       break;
+    case "user.message":
+    case "permission.requested":
+      // The main agent's prompt or permission prompt names the mode it ran in; a subagent's
+      // (top-level `agentId`) is not the TUI's. An ABSENT agentMode is not read: measured only in
+      // interactive (plan always writes "plan"), but no autopilot prompt was ever measured.
+      if (!e.agentId && typeof d.agentMode === "string" && d.agentMode) f.mode = d.agentMode;
+      break;
+    case "session.start":
+    case "session.resume":
+    case "session.shutdown": {
+      // Another process run on this log: the old TUI's mode, plan dialog and subagents are gone —
+      // except the mode across a /fork's own resume (same process).
+      const forked = e.type === "session.resume" && f.forkedIn;
+      f.forkedIn = false;
+      if (!forked) f.mode = null;
+      // A fork line from an earlier run (or a copied history) is stale: only this run's /fork may move a slot.
+      if (e.type !== "session.shutdown") f.forkTo = null;
+      if (f.plan) { f.planClosed = f.plan.id; f.plan = null; }
+      for (const a of f.agents.values()) if (a.endedAt == null) a.endedAt = at != null && at >= a.startedAt ? at : a.startedAt;
+      break;
+    }
     case "session.usage_record": {
       const u = d.usage ?? {};
       if (typeof u.model === "string" && u.model) {
@@ -188,9 +232,14 @@ export function createLogSources(log, { pollMs = 500 } = {}) {
       if (target !== "default" && target !== "plan") return { ok: false, reason: "Copilot switches only between Interactive and Plan here; this mode is a launch flag." };
       const f = log.fold(ss);
       const now = f ? f.mode : null;
-      if (now == null) return { ok: false, reason: "Copilot's mode is readable only once the session has had a prompt; switch it at the terminal (Shift+Tab)." };
+      if (now == null) return { ok: false, reason: "Copilot's mode is not readable yet in this run (its log names it at a Shift+Tab, a plan-mode prompt or a permission prompt); switch it at the terminal (Shift+Tab)." };
       if (modeOf(now) === target) return { ok: true };
-      return { keys: "\x1b[Z" }; // one Shift+Tab: interactive → plan → autopilot → interactive (measured)
+      // Every press the cycle needs, in ONE answer: plan → default is two (plan → autopilot →
+      // interactive). One press would stop in autopilot, and a request for the SAFER mode would
+      // leave the most autonomous one.
+      const from = MODE_CYCLE.indexOf(now), to = MODE_CYCLE.indexOf(target === "plan" ? "plan" : "interactive");
+      if (from < 0) return { ok: false, reason: `Copilot reports a mode this plugin does not know ("${now}"); switch it at the terminal (Shift+Tab).` };
+      return { keys: "\x1b[Z".repeat((to - from + MODE_CYCLE.length) % MODE_CYCLE.length) };
     },
   };
   const context = {

@@ -44,7 +44,7 @@ export const TRUST_PROMPT_RE = /confirmfoldertrust|rememberthisfolderforfuturese
  */
 const LOCAL_COMMANDS = new Set([
   "context", "usage", "env", // measured
-  "help", "model", "exit", "quit", "clear", "new", "resume", "session", "rename",
+  "help", "model", "exit", "quit", "clear", "new", "resume", "session",
   "mcp", "plugin", "skills", "permissions", "allow-all", "statusline", "theme", "login", "logout",
 ]);
 

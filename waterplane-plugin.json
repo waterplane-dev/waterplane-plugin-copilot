@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "maturity": "preview",
   "apiVersion": "2.2",
-  "description": "Adds GitHub Copilot CLI (measured on 1.0.91) as a backend the launcher can spawn. Its lifecycle hooks reach the daemon through this plugin's loopback sink; nothing is written to ~/.copilot or to the repo.",
+  "description": "Adds GitHub Copilot CLI (measured on 1.0.91) as a backend the launcher can spawn. Its lifecycle hooks reach the daemon through this plugin's loopback sink; it installs no config or hooks in ~/.copilot and writes nothing to the repo.",
   "backends": ["copilot"],
   "answers": true,
   "env": ["COPILOT_CLI_BIN", "COPILOT_HOME"],

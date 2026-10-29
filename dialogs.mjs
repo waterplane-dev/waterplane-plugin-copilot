@@ -109,6 +109,7 @@ const ASK_HEAD_RE = /Copilot needs information\./;
 const ARROW_UP = "\x1b[A", ARROW_DOWN = "\x1b[B";
 /** `SOURCE_KEYS_MAX` (8): the arrows plus one Return. */
 const ASK_MAX_MOVES = 7;
+const squash = (s) => String(s ?? "").replace(/\s+/g, "");
 
 /**
  * The question an `ask_user` call poses, or null when it is not one the phone can be shown with
@@ -126,7 +127,9 @@ export function askQuestion(args) {
   if (!p.enum.every((v) => typeof v === "string" && v.trim())) return null;
   const head = [str(p.title), str(p.description)].filter(Boolean).join(" — ");
   return {
-    question: head ? `${message}\n${head}` : message,
+    question: head ? `${message}\n${head}` : message, message,
+    // the rows the form draws for the field under the message (S3: "Preferred colour:", then the description)
+    field: [str(p.title) ? `${p.title}:` : null, str(p.description)].filter(Boolean).join("\n"),
     labels: p.enum.slice(0, 12),
     def: typeof p.default === "string" ? p.enum.indexOf(p.default) : -1,
   };
@@ -135,10 +138,15 @@ export function askQuestion(args) {
 /**
  * Where the form's highlight is, read off the host's screen (`api.screen`): the row index (0-based,
  * the `Other` row last) of the one `❯` among exactly `labels` + `Other`, in order, right above the
- * key hint, under the form's heading. Anything else — a wrapped label, a second cursor, no form —
- * is null. Exported for tests.
+ * key hint, under the form's heading. With `message`, the rows between that heading and the
+ * options must also be exactly the question's own words, then its `field` rows (wrapping and
+ * spacing aside), the message ending at a row break: two `ask_user` calls may share their choices,
+ * and a pick must land in the form it was meant for. A prefix is not enough — templated questions
+ * share long openings — so a form that drew the message cut short (not measured) is refused too.
+ * Anything else — a wrapped label, a second cursor, no form, another question — is null.
+ * Exported for tests.
  */
-export function askCursor(rows, labels) {
+export function askCursor(rows, labels, message, field = "") {
   if (!Array.isArray(rows) || !Array.isArray(labels) || !labels.length) return null;
   let hint = -1;
   for (let i = rows.length - 1; i >= 0; i--) if (ASK_HINT_RE.test(rows[i] ?? "")) { hint = i; break; }
@@ -147,7 +155,17 @@ export function askCursor(rows, labels) {
   while (i >= 0 && !String(rows[i] ?? "").trim()) i--;
   const want = [...labels, ASK_OTHER_ROW];
   const start = i - labels.length;
-  if (start < 0 || !rows.slice(0, start).some((r) => ASK_HEAD_RE.test(r ?? ""))) return null;
+  if (start < 0) return null;
+  let head = -1;
+  for (let h = start - 1; h >= 0; h--) if (ASK_HEAD_RE.test(rows[h] ?? "")) { head = h; break; }
+  if (head < 0) return null;
+  if (message !== undefined) {
+    const said = squash(message), drawn = rows.slice(head + 1, start).map(squash);
+    if (!said) return null;
+    let j = 0, upto = "";
+    while (j < drawn.length && upto.length < said.length) upto += drawn[j++];
+    if (upto !== said || drawn.slice(j).join("") !== squash(field)) return null;
+  }
   let cursor = -1;
   for (let k = 0; k < want.length; k++) {
     const m = /^\s*(❯\s+)?(.*?)\s*$/.exec(String(rows[start + k] ?? ""));
@@ -218,6 +236,22 @@ export const TOOL_OPTIONS = Object.freeze([{ index: 1, label: "Yes" }, { index: 
 const TOOL_OPTIONS_TUI = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, label: NO_STOP_LABEL, desc: ESC_NOTE }]);
 
 const str = (v) => (typeof v === "string" && v.trim() ? v : null);
+
+/** The host's bound on words it types (`SOURCE_TYPED_MAX`, contract 2.1). */
+const TYPED_MAX = 1000;
+/**
+ * Why the host would refuse to type `words` as a reason, or null — its `sourceTypedProblem`: at
+ * most `TYPED_MAX` characters, one line, no control character (C0, DEL, C1).
+ */
+function typedProblem(words) {
+  if (words.length > TYPED_MAX) return `that reason is ${words.length} characters, and one typed into Copilot's dialog takes at most ${TYPED_MAX} — shorten it; nothing was pressed`;
+  for (let i = 0; i < words.length; i++) {
+    const c = words.charCodeAt(i);
+    if (c === 0x0a || c === 0x0d) return "a reason typed into Copilot's dialog is one line — send it without line breaks; nothing was pressed";
+    if (c < 0x20 || (c >= 0x7f && c < 0xa0)) return "a reason typed into Copilot's dialog cannot hold control characters (a tab, for one) — remove them; nothing was pressed";
+  }
+  return null;
+}
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 /** The verbs Copilot's write dialog uses for its intentions (1.0.91 source). */
@@ -272,6 +306,26 @@ function questionOf(r) {
 }
 
 const SHELL_TOOLS = new Set(["bash", "shell", "powershell"]);
+/** The calls a file hook (`edit {file_path}`) is measured to come from: `create {path}`, `apply_patch "<patch>"`. */
+const FILE_CALLS = new Set(["create", "edit", "apply_patch"]);
+/** The files an `apply_patch` call's patch text names (`*** Add File: <path>`, measured 1.0.98). */
+const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
+
+/**
+ * Can `tool.execution_start` data `d` be the call a non-shell hook (`toolName`, `toolInput`) asks
+ * about? The same tool name, or a file-writing call (`FILE_CALLS`) about the hook's own file.
+ * Anything else — a parallel `view` of that file, a `read_agent` — is another call, and the box
+ * gets a minted id instead.
+ */
+function sameCall(toolName, toolInput, d) {
+  if (SHELL_TOOLS.has(d.toolName)) return false;
+  if (toolName && d.toolName === toolName) return true;
+  const file = pathOf(toolInput);
+  if (!file || !FILE_CALLS.has(d.toolName)) return false;
+  if (typeof d.arguments !== "string") return pathOf(d.arguments) === file;
+  for (const m of d.arguments.matchAll(PATCH_FILE_RE)) if (m[1].trim() === file) return true;
+  return false;
+}
 /** The file a non-shell hook input is about (`edit {file_path}` measured; `path` / `fileName` tolerated). */
 const pathOf = (input) => (input && typeof input === "object" ? str(input.file_path) ?? str(input.path) ?? str(input.fileName) : null);
 
@@ -279,8 +333,11 @@ const pathOf = (input) => (input && typeof input === "object" ? str(input.file_p
  * The complete lines of `path` from byte `from` (or from the last `max` bytes,
  * dropping the partial first line, when `from` is null). `next` is the offset
  * just past the last complete line: a line still being written is read next time.
+ * A line longer than `max` would never fit a read, so it is skipped: `skipping`
+ * says the read ended inside one, and the next read (`dropFirst`) drops bytes up
+ * to its newline instead of reading it as a line.
  */
-function readLines(path, from, max) {
+function readLines(path, from, max, dropFirst = false) {
   let fd;
   try { fd = openSync(path, "r"); } catch { return null; }
   try {
@@ -290,11 +347,28 @@ function readLines(path, from, max) {
     const len = Math.min(size - start, max);
     const buf = Buffer.alloc(len);
     const got = readSync(fd, buf, 0, len, start);
+    const b = buf.subarray(0, got);
+    // A tail window that starts right after a newline starts on a whole line: keep it.
+    let partial = dropFirst;
+    if (from == null && start > 0) {
+      const one = Buffer.alloc(1);
+      partial = readSync(fd, one, 0, 1, start - 1) !== 1 || one[0] !== 0x0a;
+    }
     let lo = 0;
-    if (from == null && start > 0) { const nl = buf.indexOf(0x0a); lo = nl < 0 ? got : nl + 1; }
-    const hi = buf.lastIndexOf(0x0a, got - 1);
-    if (hi < lo) return { lines: [], next: start + lo };
-    return { lines: buf.subarray(lo, hi).toString("utf8").split("\n"), next: start + hi + 1 };
+    if (partial) {
+      const nl = b.indexOf(0x0a);
+      if (nl < 0) return { lines: [], next: start + got, skipping: true };
+      lo = nl + 1;
+    }
+    const hi = b.lastIndexOf(0x0a);
+    if (hi < lo) {
+      // A whole window with no newline: one oversized line — skip it rather than re-read it forever.
+      // Past a dropped part, the next line starts at `lo` (or the window ended on that newline): read
+      // from there, never skip — a skip would drop the next line, which may be whole.
+      if (lo === 0 && got >= max) return { lines: [], next: start + got, skipping: true };
+      return { lines: [], next: start + lo };
+    }
+    return { lines: b.subarray(lo, hi).toString("utf8").split("\n"), next: start + hi + 1 };
   } finally { closeSync(fd); }
 }
 
@@ -349,7 +423,9 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     const opts = optionsOf(r);
     const option = opts.find((o) => o.index === choice);
     if (!option) return { ok: false, reason: `${choice} is not one of this dialog's options` };
-    const text = typeof extra?.text === "string" && extra.text.trim() ? extra.text.trim() : null;
+    // The person's words as typed: the host types a reason only if it is EXACTLY what they typed.
+    const raw = typeof extra?.text === "string" && extra.text.trim() ? extra.text : null;
+    const text = raw ? raw.trim() : null;
     if (text && !option.takesText) return { ok: false, reason: `“${option.label}” takes no typed reason — tap it without one` };
     if (r.phase === "hook" && r.settle) {
       const settle = r.settle;
@@ -370,10 +446,17 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (no) return { ok: false, reason: no };
     const front = [...st(slot).open.values()].find((x) => x.phase === "tui");
     if (front !== r) return { ok: false, reason: "another Copilot dialog is in front of this one in the terminal — answer that one first" };
+    // An ask_user form is open too: which of the two has the keyboard is not known, and a digit or
+    // Esc meant for this dialog must never land in the form (or the reverse).
+    if (st(slot).questions.size || st(slot).asks.size) return { ok: false, reason: "Copilot's question form is open as well, so the phone cannot tell which one the keys would reach — answer this dialog at the terminal" };
+    const words = text && choice === 3 ? raw : null;
+    // Refused here, before anything counts as typed, on the host's own rule (`sourceTypedProblem`).
+    const bad = words != null ? typedProblem(words) : null;
+    if (bad) return { ok: false, reason: bad };
     // The host types these (answerBox → core.input), once, while this dialog is still open.
     r.typedAt = now();
     // S3b: `3` opens the No row's field, the reason goes in, a SEPARATE Return sends it.
-    if (text && choice === 3) return { keys: NO_ROW_DIGIT, typed: text, then: "\r" };
+    if (words != null) return { keys: NO_ROW_DIGIT, typed: words, then: "\r" };
     return { keys: DIALOG_KEYS[choice] };
   }
 
@@ -406,7 +489,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   const emitQ = (slot, fn) => { for (const w of slot.questions ?? []) { try { fn(w); } catch { /* the host's fault */ } } };
 
   function makeQuestion(slot, id, q) {
-    const rec = { id, labels: q.labels, typedAt: null };
+    const rec = { id, labels: q.labels, message: q.message, field: q.field, typedAt: null };
     rec.question = {
       id, question: q.question, freeText: false,
       options: q.labels.map((label, k) => ({ index: k + 1, label })),
@@ -431,9 +514,13 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (!askKeysMeasured) return { ok: false, reason: `pick “${rec.labels[k]}” at the terminal (↑/↓, then Enter): answering Copilot's question form from the phone has not been measured yet, so nothing was pressed` };
     if (slot.health.state !== "up") return { ok: false, reason: "Copilot's channel is down, so this question cannot be answered from the phone — answer it at the terminal" };
     if (rec.typedAt != null && now() - rec.typedAt < KEYS_SETTLE_MS) return { ok: false, reason: "already answered from the phone — waiting for Copilot to confirm it" };
+    // A terminal permission dialog is up as well: arrows + Return there would pick one of ITS rows.
+    readTail(slot);
+    if (!s.questions.has(rec.id)) return { ok: false, reason: "that question is no longer open — it was answered or withdrawn" };
+    if (findOpen(slot, (x) => x.phase === "tui")) return { ok: false, reason: "a Copilot permission dialog is open as well, so the phone cannot tell which one the keys would reach — answer the question at the terminal" };
     let rows = null;
     try { rows = screen(slot.hostId)?.rows(60) ?? null; } catch { rows = null; }
-    const cur = askCursor(rows, rec.labels);
+    const cur = askCursor(rows, rec.labels, rec.message ?? "", rec.field ?? "");
     if (cur == null) return { ok: false, reason: "Copilot's question form is not on the screen the way it was measured — answer it at the terminal" };
     const keys = askKeys(cur, k);
     if (!keys) return { ok: false, reason: `“${rec.labels[k]}” is more than ${ASK_MAX_MOVES} rows from the highlighted one — pick it at the terminal` };
@@ -513,6 +600,10 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         if (tcid) closeQuestion(slot, tcid, quiet);
         const r = tcid ? findOpen(slot, (x) => x.toolCallId === tcid) : null;
         if (r && r.phase !== "hook") drop(r);
+        // A held hook's call cannot finish before the hook answers: that box was given ANOTHER
+        // call's id. It keeps its hold (still answerable) and forgets the id, so the real call's
+        // `permission.requested` finds it by its file — not left open forever under a finished call.
+        else if (r && !r.requestId) r.toolCallId = null;
         return;
       }
       case "abort": {
@@ -538,10 +629,11 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (!slot.id) return [];
     const s = st(slot);
     const first = s.offset == null;
-    const r = readLines(eventsPath(homeDir(), slot.id), s.offset, first ? TAIL_BYTES : 4 * 1024 * 1024);
+    const r = readLines(eventsPath(homeDir(), slot.id), s.offset, first ? TAIL_BYTES : 4 * 1024 * 1024, !first && !!s.skip);
     if (!r) return [];
-    if (r.reset) { s.offset = null; return readTail(slot); } // truncated or replaced: start again at the tail
+    if (r.reset) { s.offset = null; s.skip = false; return readTail(slot); } // truncated or replaced: start again at the tail
     s.offset = r.next;
+    s.skip = !!r.skipping;
     const out = [];
     for (const l of r.lines) {
       if (!l.trim()) continue;
@@ -556,7 +648,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   }
 
   /** The toolCallId (and description) of the tool call a permission hook is about, from the tail. */
-  function toolCallFor(slot, toolName, command) {
+  function toolCallFor(slot, toolName, command, toolInput = null) {
     readTail(slot);
     const s = st(slot);
     const done = new Set();
@@ -566,11 +658,13 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       const e = s.recent[i], d = e.data ?? {};
       if (e.type !== "tool.execution_start") { if (str(d.toolCallId)) done.add(d.toolCallId); if (str(d.permissionRequest?.toolCallId)) done.add(d.permissionRequest.toolCallId); continue; }
       const tcid = str(d.toolCallId);
-      if (!tcid || done.has(tcid) || s.open.has(tcid)) continue;
+      // taken already: a box's key, or the toolCallId a box under a minted id learned since
+      if (!tcid || done.has(tcid) || s.open.has(tcid) || findOpen(slot, (x) => x.toolCallId === tcid)) continue;
       if (!shell) {
         // A non-shell hook names its tool differently from the call (measured: hook `edit`, call
-        // `apply_patch`), so the call is taken only when it is the ONE unanswered non-shell call.
-        if (!SHELL_TOOLS.has(d.toolName)) others.push(tcid);
+        // `apply_patch`), so a call is taken only when it can be the hook's (`sameCall`) and is the
+        // ONE such unanswered call — never a parallel `view` or `read_agent` that happens to run.
+        if (sameCall(toolName, toolInput, d)) others.push(tcid);
         continue;
       }
       if (toolName && d.toolName && d.toolName !== toolName) continue;
@@ -589,7 +683,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     const command = shell ? str(toolInput?.command) : null;
     // Too little to ask anybody, or no hold to wait on: Copilot shows its own dialog.
     if (!toolName || (shell && !command) || !hold || typeof hold.onExpired !== "function") return {};
-    const hit = toolCallFor(slot, toolName, command);
+    const hit = toolCallFor(slot, toolName, command, toolInput);
     // A hook re-fired for a call whose dialog is already held (same tool, same command or input; its
     // toolCallId is taken, so `hit` is null): ONE dialog, the NEW hold replaces the old. The old hook's
     // response is released as `{}` (the core would have answered that at its expiry anyway) and its
@@ -625,7 +719,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     const t0 = now();
     const look = () => {
       if (published) return;
-      const h = toolCallFor(slot, toolName, command);
+      const h = toolCallFor(slot, toolName, command, toolInput);
       if (h) {
         r.id = r.dialog.id = h.toolCallId;
         r.toolCallId = h.toolCallId;

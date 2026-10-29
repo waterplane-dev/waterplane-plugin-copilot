@@ -33,7 +33,7 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | transcript, delivery, tokens | log | `events.jsonl` + OTel | — |
 | effort | ladder | absent | the flag is `--reasoning-effort`; ignored under Auto (this account); readable per turn from `user.message.responsesReasoning.effort` (S4b) |
 | plan | planbox | `exit_plan_mode` call posed (text = the session's `plan.md`, else the summary), closed by its completion / `abort`; approve = `2` (Accept, continue in Interactive = Manual Approval; a digit commits, measured) | keep planning ("4. Suggest changes") unmeasured: refused in words |
-| mode | footer | `session.mode_changed` (written AT each Shift+Tab once the log exists): interactive = `default`, plan = `plan`, autopilot = unknown (null); `set` = one Shift+Tab toward default/plan | the other modes are launch flags only |
+| mode | footer | `session.mode_changed` (written AT each Shift+Tab once the log exists): interactive = `default`, plan = `plan`, autopilot = `bypassPermissions` (read so the phone can step out of it; `set` never presses into it); also read from the main agent's `user.message.agentMode` / `permission.requested.agentMode` (a prompt's absent `agentMode` is not read: autopilot's is unmeasured); unknown again at `session.start`/`resume`/`shutdown`, except a /fork's own resume (same TUI), which keeps it; `set` = as many Shift+Tabs as the measured cycle (interactive → plan → autopilot → interactive) needs, in one answer, so plan → default never stops in autopilot | the other modes are launch flags only |
 | commands | claude's set | `copilot help commands` (no model call), once per CLI version; `local` measured for `/context`, `/fork` (true) and `/compact`, `/fleet` (false), the rest from the help text; `/autopilot /changelog /rename /pr /chronicle /share /move` unclassified | — |
 | spend (session) | log | `session.usage_checkpoint` running total: tokens, AI credits as `native`; subagents' tokens split out by their `agentId` usage records (exact to the token); no dollars | credits are not stated per subagent |
 | usage | `/usage` | names source `copilot` (the in-repo `copilot-usage` extension's reading; this plugin never reads the account): the host keeps ONE registration per source for a backend (usmc `usagesources.ts`, `yields`) | no wall: no exhaustion text seen yet |
@@ -98,8 +98,8 @@ during the hold (see below).
   equivalent and are not offered.
 - **Hooks without touching your config.** A tiny Copilot plugin (`plugin.json` + `hooks.json`, all
   13 hook names) is generated in the daemon's state dir and passed with `--plugin-dir`. Each hook
-  runs `node hook/post.mjs <hook> <sink> <wait>`: node only, no curl. Nothing is written to
-  `~/.copilot` or to the repo.
+  runs `node hook/post.mjs <hook> <sink> <wait>`: node only, no curl. No config or hooks are installed in
+  `~/.copilot`, and nothing is written to the repo.
 - **Exact turns.** `userPromptSubmitted` starts a turn, `agentStop` ends it (measured: once per
   prompt; `assistant.turn_end` is per model step and is not used). `sessionStart` fires lazily,
   right after the FIRST prompt's `userPromptSubmitted`, so its `ready` is not passed on inside a
@@ -118,7 +118,8 @@ during the hold (see below).
   above) and the request appears on the phone as a box. Its id is the tool call's own `toolCallId`
   (read from `tool.execution_start`; for a non-shell tool, whose hook and call carry different names
   — measured: hook `edit {file_path, diff}`, call `create` or `apply_patch` — the one unanswered
-  non-shell call). A tap goes through the daemon's one answer path and answers the hook: **Yes** ⇒
+  call with the same tool name, or a `create`/`edit`/`apply_patch` about the hook's own file; any
+  other case gets a minted id until `permission.requested` names the call). A tap goes through the daemon's one answer path and answers the hook: **Yes** ⇒
   `{behavior:"allow"}`, **No** ⇒ `{behavior:"deny", message}`. No tap in time ⇒ the daemon answers
   `{}`, Copilot shows its own dialog, and the SAME box stays on the phone, re-worded in Copilot's
   words once `permission.requested` says what the dialog is; a tap then makes the dialog's
@@ -153,8 +154,12 @@ during the hold (see below).
   (`totalNanoAiu / 1e9`, spend = delta between checkpoints) in their own unit, beside tokens per
   model from the OTel `chat` spans (input uncached / cache read / cache write / output). Both cover
   ONE population: the sessions this plugin launched (those with an OTel file, `<id>.jsonl` or the
-  span's conversation id); plain-terminal Copilot sessions in `~/.copilot` are in neither. Nothing
-  on disk is `available: false` with a sentence, never zeros.
+  span's conversation id); plain-terminal Copilot sessions in `~/.copilot` are in neither. Credits
+  count from the plugin's first launch of a session, so a terminal session resumed here brings no
+  older spend, and a `/fork` counts only its own credits, not the parent's it copied. Token spans
+  are kept for 50 days (the hourly rows cover 45), so older days carry credits only. Every log is
+  read to its end before the document is answered. Nothing on disk is `available: false` with a
+  sentence, never zeros.
 - **Context fill.** The whole prompt of the newest main model call, from the fresher of two of
   Copilot's records: `session.usage_checkpoint` (`promptCacheBreakState`, conversation `main`,
   `lastActiveModel` → `prompt_tokens`, `completed_at`), written right after `agentStop`; and the

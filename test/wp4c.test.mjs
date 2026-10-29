@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import { fakeTail } from "./fakeapi.mjs";
 import assert from "node:assert/strict";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeliverySource, createTranscriptSource, foldEvents } from "../transcript.mjs";
@@ -22,7 +22,11 @@ function world({ events = true, otel = true, launched = true } = {}) {
   mkdirSync(otelDir);
   if (events) { mkdirSync(join(home, "session-state", ID), { recursive: true }); copyFileSync(EVENTS, join(home, "session-state", ID, "events.jsonl")); }
   if (otel) copyFileSync(OTEL, join(otelDir, `${ID}.jsonl`));
-  else if (launched) writeFileSync(join(otelDir, `${ID}.jsonl`), ""); // launched here, no model call spanned yet
+  else if (launched) { // launched here, no model call spanned yet; the file was made at the fixture's launch
+    writeFileSync(join(otelDir, `${ID}.jsonl`), "");
+    const born = new Date("2026-10-01T20:11:31Z");
+    utimesSync(join(otelDir, `${ID}.jsonl`), born, born);
+  }
   return { home, otelDir, eventsFile: join(home, "session-state", ID, "events.jsonl"), done: () => rmSync(home, { recursive: true, force: true }) };
 }
 

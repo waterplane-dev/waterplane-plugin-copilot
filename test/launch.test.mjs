@@ -82,5 +82,6 @@ test("resolveBin: the override wins, else the first copilot on PATH, else the ba
   assert.equal(resolveBin(() => undefined, `/nonexistent:${d}`), exe);
   assert.equal(binFound(exe), true);
   assert.equal(resolveBin(() => undefined, "/nonexistent"), "copilot");
-  assert.equal(binFound("copilot"), false);
+  const old = process.env.PATH; // a bare name is looked up on PATH, so pin it
+  try { process.env.PATH = "/nonexistent"; assert.equal(binFound("copilot"), false); } finally { process.env.PATH = old; }
 });

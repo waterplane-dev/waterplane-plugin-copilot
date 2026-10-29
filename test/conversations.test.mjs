@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConversationSource, HEAD_BYTES, listConversations, removeConversation } from "../conversations.mjs";
+import { createConversationSource, HEAD_BYTES, HEAD_MAX, listConversations, removeConversation } from "../conversations.mjs";
 import { FACTS } from "../host.mjs";
 
 const FIXTURE = readFileSync(new URL("./fixtures/copilot-1.0.91/events-1091.jsonl", import.meta.url), "utf8");
@@ -83,14 +83,33 @@ test("list: filters by realpath-equal cwd, skips non-uuid and never-prompted dir
 test("list: no workspace.yaml falls back to session.start's cwd; the cap holds; only the head is read", async () => {
   const w = world();
   session(w.home, A, { cwd: null, events: startLine(w.repo) + userMsg("from the start line") });
-  const big = startLine(w.repo) + "x".repeat(HEAD_BYTES) + "\n" + userMsg("past the head");
+  const big = startLine(w.repo) + "x".repeat(HEAD_MAX) + "\n" + userMsg("past the head");
   session(w.home, B, { cwd: w.repo, events: big });
   const rows = await listConversations(w.home, w.repo);
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
   assert.equal(byId[A].firstPrompt, "from the start line");
   assert.ok(byId[B], "listed");
-  assert.equal(byId[B].firstPrompt, undefined, "a prompt past the head is not looked for");
+  assert.equal(byId[B].firstPrompt, undefined, "a prompt past HEAD_MAX is not looked for");
   assert.equal((await listConversations(w.home, w.repo, { limit: 1 })).length, 1);
+});
+
+test("list: a system.message bigger than one head (instructions grow it) still finds the first prompt", async () => {
+  const w = world();
+  const sys = JSON.stringify({ type: "system.message", data: { content: "x".repeat(70000) } }) + "\n";
+  session(w.home, A, { cwd: w.repo, events: startLine(w.repo) + sys + userMsg("fix the login bug") });
+  session(w.home, B, { cwd: w.repo, events: startLine(w.repo) + "y".repeat(HEAD_BYTES * 3) + "\n" + userMsg("three heads down") });
+  const byId = Object.fromEntries((await listConversations(w.home, w.repo)).map((r) => [r.id, r]));
+  assert.equal(byId[A].firstPrompt, "fix the login bug");
+  assert.equal(byId[B].firstPrompt, "three heads down");
+});
+
+test("list: quoted workspace.yaml names decode YAML escapes (double- and single-quoted)", async () => {
+  const w = world();
+  session(w.home, A, { cwd: w.repo, events: userMsg("p"), extra: String.raw`name: "say \"hi\": now \\ ok é\tx"` + "\n" });
+  session(w.home, B, { cwd: w.repo, events: userMsg("p"), extra: "name: 'it''s: fine'\n" });
+  const byId = Object.fromEntries((await listConversations(w.home, w.repo)).map((r) => [r.id, r]));
+  assert.equal(byId[A].title, 'say "hi": now \\ ok é x');
+  assert.equal(byId[B].title, "it's: fine");
 });
 
 test("remove: refuses a bad id, a symlink out, a different cwd, a GitHub-synced session, a live holder, a held id", async () => {

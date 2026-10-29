@@ -31,13 +31,16 @@ export function pollLock(router, slot, home, alive) {
     if (!slot.state.hookSeen) router.setHealth(slot, "down", "waiting for Copilot's first hook to learn which session --continue opened");
     return;
   }
+  // sessionEnd wins over a live holder: the process outlives the session until the next hook.
+  if (slot.state.ended) {
+    router.setHealth(slot, "down", "Copilot ended the session");
+    return;
+  }
   // A fresh launch holds the lock; a resumed one only says so in its process log (measured, WP4d).
   const pid = liveHolder(sessionDir(home, slot.id), alive) ?? logHolder(home, slot.id, alive);
   if (pid) {
     slot.state.lockSeen = true;
     router.setHealth(slot, "up");
-  } else if (slot.state.ended) {
-    router.setHealth(slot, "down", "Copilot ended the session");
   } else if (slot.state.lockSeen) {
     router.setHealth(slot, "down", "Copilot exited (its session lock is gone)");
   } else if (!slot.state.hookSeen) {

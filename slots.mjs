@@ -58,11 +58,17 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
     state: {},
   });
 
+  /** Host session id → the fork id a RELEASED slot had followed (`idOf` after close keeps reading the fork). */
+  const goneForks = new Map();
+
   /** The slot for one host session, created on first ask. */
   function slotFor(ss) {
     let s = byHost.get(ss.id);
     if (s) return s;
     s = makeSlot(ss);
+    // Re-attached after release: this process still runs the fork it had followed, not the record's id.
+    const fk = goneForks.get(ss.id);
+    if (fk) { goneForks.delete(ss.id); if (s.id && s.id !== fk) s.forkedFrom = [s.id]; s.id = fk; }
     if (s.id) {
       // A resumed id that another live host session still holds keeps ONE
       // slot per Copilot id: the newer host session takes it over.
@@ -75,6 +81,10 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   }
 
   function release(slot) {
+    if (slot.forkedFrom && slot.id) {
+      goneForks.set(slot.hostId, slot.id);
+      while (goneForks.size > STRAYS_MAX) goneForks.delete(goneForks.keys().next().value);
+    }
     if (byHost.get(slot.hostId) === slot) byHost.delete(slot.hostId);
     if (slot.id && byId.get(slot.id) === slot) byId.delete(slot.id);
     unbound.delete(slot);
@@ -119,6 +129,8 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
 
   /** `(ss) => id|null`: the id this session's OWN log says it was forked into (`/fork`). Set by the backend. */
   let forkReader = null;
+  /** Fork ids already adopted once. */
+  const followed = new Set();
   const setForkReader = (fn) => { forkReader = typeof fn === "function" ? fn : null; };
 
   /**
@@ -128,9 +140,13 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
    * can only come from a different, later launch). Never by cwd: a subagent's hooks keep routing nowhere.
    */
   function followFork(sid) {
-    if (!forkReader) return null;
+    if (!forkReader || followed.has(sid)) return null;
     for (const slot of byHost.values()) {
       if (!slot.id || slot.ss == null) continue;
+      // Two host sessions on one Copilot id (`--resume P` twice): the process that forked is the
+      // one byId routes P to, not whichever slot happens to come first.
+      const owner = byId.get(slot.id);
+      if (owner && owner !== slot) continue;
       let to = null;
       try { to = forkReader(slot.ss); } catch { to = null; }
       if (to !== sid) continue;
@@ -139,6 +155,10 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
       slot.id = sid;
       strays.delete(sid);
       byId.set(sid, slot);
+      // Consumed: the parent's log keeps naming this id, but a later hook carrying it is a later
+      // launch (or a stray), never this /fork again.
+      followed.add(sid);
+      while (followed.size > STRAYS_MAX) followed.delete(followed.values().next().value);
       return slot;
     }
     return null;
@@ -183,8 +203,20 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   /** The slot of a host session id, if one exists — never creates one. */
   const peek = (hostId) => byHost.get(hostId) ?? null;
 
+  /**
+   * The Copilot id a source should read for a host session — never creates a slot: after close()
+   * released it, a read must not resurrect a zombie that steals byId or rejoins `unbound`. A slot
+   * that followed a /fork reads the FORK's id, not the host record's stale one; without a slot,
+   * the record's own id (or the fork it had followed), else undefined (cannot say).
+   */
+  function idOf(ss) {
+    const sl = ss ? byHost.get(ss.id) : null;
+    if (sl) return (sl.forkedFrom ? sl.id : ss.backendSessionId || sl.id) || undefined;
+    return (ss && (goneForks.get(ss.id) ?? ss.backendSessionId)) || undefined;
+  }
+
   /** Is this Copilot session id routed to a live slot here? Case-insensitive, like every insert. */
   const has = (id) => typeof id === "string" && byId.has(id.toLowerCase());
 
-  return { slotFor, peek, setForkReader, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
+  return { slotFor, peek, idOf, setForkReader, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
 }
