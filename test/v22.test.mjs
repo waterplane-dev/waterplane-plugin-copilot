@@ -8,11 +8,12 @@ import { join } from "node:path";
 import { applyEvent, createLogSources, emptyFold, modeOf, spendOf } from "../sessionlog.mjs";
 import { parseHelpCommands, createCommandSource } from "../commands.mjs";
 import { FACTS, USAGE, withLog } from "../host.mjs";
-import { pathToFileURL } from "node:url";
 
-const MAIN = process.env.WATERPLANE_REPO || process.env.MAIN_REPO || join(process.env.HOME ?? "", "dev", "usmc");
+// The slot-shape validators come from the same kit door as fakeapi.mjs (vendored copy, or the live
+// checkout when $WATERPLANE_REPO is set), not from a sibling repo's dist.
+const { KIT_URL } = await import("./fakeapi.mjs");
 const { sourceCommandsProblems, sourceCompactionsProblems, sourceContextSampleProblems, sourceModeProblem, sourceSpendProblems } =
-  await import(pathToFileURL(join(MAIN, "packages/shared/dist/sourceshape.js")).href);
+  await import(new URL("./shared.mjs", KIT_URL).href);
 
 const FX = join(import.meta.dirname, "fixtures", "copilot-1.0.98");
 const lines = (f) => readFileSync(join(FX, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));

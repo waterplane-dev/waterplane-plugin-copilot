@@ -1,6 +1,6 @@
 {
   "name": "waterplane-plugin-copilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GitHub Copilot CLI as a backend: a plugin for the phone remote that drives coding CLIs in a PTY (see README.md).",
   "type": "module",
   "private": true,
@@ -10,6 +10,8 @@
   },
   "scripts": {
     "test": "node --test",
+    "sync:testkit": "node scripts/sync-testkit.mjs",
+    "release:check": "npm test && node scripts/probe.mjs --launch-only && node scripts/copilot-drift.mjs",
     "e2e": "node scripts/e2e-host.mjs"
   },
   "license": "MIT",

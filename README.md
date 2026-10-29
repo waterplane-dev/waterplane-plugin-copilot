@@ -56,7 +56,7 @@ or after it.)
 
 ## Status: preview
 
-This is a **preview** release (0.1.0). It needs GitHub Copilot CLI installed and signed in on the desktop that runs the waterplane daemon.
+This is a **preview** release (0.2.0). It needs GitHub Copilot CLI installed and signed in on the desktop that runs the waterplane daemon.
 
 ## Install
 
@@ -298,7 +298,7 @@ CLI's. The three limits this verdict used to list are fixed and measured below
 ## Tests
 
 ```bash
-node --test                 # 100: unit, the measured fixtures, and the fake CLI driving the generated hooks
+node --test                 # unit, the measured fixtures, and the fake CLI driving the generated hooks; the plugin testkit is vendored (test/vendor/), so a fresh clone runs it
 node scripts/e2e-host.mjs   # a real daemon from the main repo (MAIN_REPO, built; the rule checks need standing rules), this plugin, the fake copilot
 node scripts/probe.mjs --spend   # the REAL copilot through a real daemon: spends ~0.7 AI credits
 PROBE_STEPS=rule,write,nolate node scripts/probe.mjs --spend   # the fix/known-limits checks: ~0.47
@@ -307,4 +307,27 @@ PROBE_STEPS=rule,write,nolate node scripts/probe.mjs --spend   # the fix/known-l
 `e2e-host.mjs` boots the main repo's built host on a free loopback port with a temp root, a temp
 config dir and a temp `COPILOT_HOME`, tmux and the preflight off — never port 8770, never your
 config, never `~/.copilot`. `MAIN_REPO=<path>` points it (and two checks in `test/host.test.mjs`) at
-another checkout; without a build they skip and say so.
+another checkout; without a build they skip and say so. `WATERPLANE_REPO` (or `MAIN_REPO`) also
+points `node --test` at that checkout's live testkit instead of the vendored one;
+`npm run sync:testkit` re-pins the vendored copy.
+
+## Releasing
+
+Unit tests pass against fixtures; the bugs a release shipped with (a mode set from plan to default
+that stopped in autopilot) only showed with the real binary. So before a release:
+
+```bash
+npm run release:check   # npm test, then probe.mjs --launch-only, then copilot-drift.mjs
+```
+
+It needs `copilot` installed and signed in (the probe reads the token from `~/.copilot`, only
+reading), and the main waterplane checkout built (`MAIN_REPO`, default `~/dev/usmc`) for the real
+host. `--launch-only` sends no prompt: launch, hook, `/usage`, three Shift+Tab presses around the
+mode cycle (checked only when the log names the modes; otherwise noted as not checked), kill and
+resume. It spends 0 AI credits and exits non-zero on any FAIL. `copilot-drift` compares the installed
+`copilot` with the versions measured here, but it does NOT fail on drift (it exits non-zero only when
+it cannot assess), so read its output: if it reports more than 0, measure the new version first (fixtures under `test/fixtures/copilot-<ver>/`) before releasing.
+
+Then bump `version` in `package.json` and `waterplane-plugin.json`, commit with the probe's result
+line (`10/11 pass` style) in the message, and tag `v<version>`. `--spend` (about 4 prompts) is the
+fuller check when the permission path changed.

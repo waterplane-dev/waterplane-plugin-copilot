@@ -1,0 +1,16 @@
+{
+  "readings": [
+    {
+      "key": "copilotDrift",
+      "name": "Copilot releases past the newest capture",
+      "means": "How many published Copilot CLI releases sit between the newest version with fixtures in test/fixtures/ and the one installed here. The footer, dialog and Shift+Tab readers and the events.jsonl parser are proven against real captures of those versions only; each release past them is one nobody has looked at, and the first sign of a break is a phone blocked on a screen the reader no longer recognises. Absent when the installed version, the fixtures or the npm registry cannot be read.",
+      "better": "lower",
+      "unit": "releases",
+      "run": [
+        "node",
+        "scripts/copilot-drift.mjs",
+        "--reading"
+      ]
+    }
+  ]
+}

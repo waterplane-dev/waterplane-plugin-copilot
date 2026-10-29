@@ -1,0 +1,8 @@
+{
+  "source": "waterplane main repo",
+  "commit": "324fbb1a032e5c24df2da7db0494e9b105d281e8",
+  "dirty": false,
+  "kitPath": "packages/plugin-testkit",
+  "PLUGIN_API_VERSION": "2.4.0",
+  "synced": "2026-10-29"
+}

@@ -67,6 +67,7 @@ const freePort = () => new Promise((r) => { const s = createServer(); s.listen(0
 let PORT = await freePort();
 while (PORT === 8770) PORT = await freePort();
 
+const RUN = Date.now().toString(36);
 const TMP = mkdtempSync(join(tmpdir(), "copilot-probe-"));
 const ROOT = join(TMP, "root"), CONFIG = join(TMP, "config");
 const HOME = REAL_HOME ? join(homedir(), ".copilot") : join(TMP, "copilot-home");
@@ -206,7 +207,10 @@ async function main() {
   note("wire caps", backends?.find((b) => b.id === "copilot")?.caps);
 
   // ── launch ────────────────────────────────────────────────────────────────
-  async function launch(ackId, extra = {}) {
+  // The host keeps an ack ledger across runs and replays a known ackId without creating anything
+  // ("create-1" answered ok with last run's sessionId, no session.created): make each run's ids new.
+  async function launch(tag, extra = {}) {
+    const ackId = `${tag}-${RUN}`;
     const n = created.length;
     const t0 = Date.now();
     send({ t: "session.create", cwd: repo.path, cols: 120, rows: 40, ackId, launch: { backend: "copilot" }, ...extra });
@@ -306,6 +310,24 @@ async function main() {
   }
   const planBefore = await planReading("before");
   if (LAUNCH_ONLY) {
+    // The mode cycle (0 credits: a Shift+Tab is a keypress, no prompt). Three presses must walk
+    // interactive -> plan -> autopilot -> interactive in the log, and end where they began; the
+    // plugin's mode.set computes its press counts from this cycle (db830d9: plan -> default is two).
+    const modes0 = () => events().filter((e) => e.type === "session.mode_changed").length;
+    const m0 = modes0();
+    for (let i = 0; i < 3; i++) { send({ t: "session.input", id: sid, data: "\x1b[Z" }); await sleep(900); }
+    await until(() => modes0() >= m0 + 3, 8000);
+    const seq = events().filter((e) => e.type === "session.mode_changed").slice(m0).map((e) => e.data?.newMode);
+    const start = events().filter((e) => e.type === "session.mode_changed").slice(m0)[0]?.data?.previousMode;
+    const i0 = ["interactive", "plan", "autopilot"].indexOf(start);
+    const want3 = i0 < 0 ? null : [1, 2, 3].map((k) => ["interactive", "plan", "autopilot"][(i0 + k) % 3]);
+    // Copilot names its mode in the log only at some moments (a Shift+Tab, a plan prompt, a permission
+    // prompt), so a fresh session may log nothing: that is "not observable", not a failure. Events
+    // that ARE logged must walk the cycle.
+    const cycleOk = !seq.length || (want3 && JSON.stringify(seq) === JSON.stringify(want3));
+    if (!seq.length) note("mode cycle", "no session.mode_changed events in the log; not checked");
+    else check(cycleOk, "3 x Shift+Tab walks the mode cycle and returns", `from ${start}: ${JSON.stringify(seq)}`);
+    if (!cycleOk) writeFileSync(join(OUT, "mode-screen.txt"), screen(sid, true) + "\n--- events\n" + events().map((e) => e.type).join("\n"));
     // PROBE_SEED=<events.jsonl of an earlier run>: give the session a history before resuming it,
     // so the resume path a person actually takes (a session WITH history) is checked for free.
     const seed = process.env.PROBE_SEED;
