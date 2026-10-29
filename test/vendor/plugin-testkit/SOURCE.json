@@ -1,6 +1,7 @@
 {
-  "source": "waterplane main repo",
-  "commit": "324fbb1a032e5c24df2da7db0494e9b105d281e8",
+  "source": "github.com/waterplane-dev/waterplane",
+  "tag": "v0.1.12",
+  "commit": "bb8fbeaa1e3f9236cea02460e1becce2d955a72d",
   "dirty": false,
   "kitPath": "packages/plugin-testkit",
   "PLUGIN_API_VERSION": "2.4.0",

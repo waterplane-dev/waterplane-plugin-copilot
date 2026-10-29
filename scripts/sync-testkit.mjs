@@ -6,13 +6,16 @@
  * (a 4.7 MB dist), here it re-exports from ONE tree-shaken bundle made by the checkout's own esbuild.
  * No dependency is added to this repo; esbuild is borrowed from the source checkout at sync time.
  *
- *   npm run sync:testkit            # source: $WATERPLANE_REPO, default ~/dev/usmc
+ *   npm run sync:testkit            # source: $WATERPLANE_REPO, default ~/dev/waterplane-public
+ *
+ * The source is a checkout of the PUBLIC waterplane repo (github.com/waterplane-dev/waterplane) at a
+ * release tag, so the pin in SOURCE.json is a release anyone can check out and compare.
  *
  * Writes SOURCE.json (source commit + dirty flag, PLUGIN_API_VERSION) so the pin is auditable;
  * test/testkit-pin.test.mjs fails when that version drifts from this plugin's manifest.
  *
- * This repo is public and the source checkout is not: the bundle's per-module path comments are
- * stripped and SOURCE.json names no repo, only the commit. Everything is built and checked in a temp
+ * The bundle's per-module path comments (the source checkout's local layout) are stripped.
+ * Everything is built and checked in a temp
  * dir first, so a failed sync leaves the vendored copy as it was, never kit and bundle out of step.
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -21,7 +24,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const SRC = process.env.WATERPLANE_REPO || join(homedir(), "dev", "usmc");
+const SRC = process.env.WATERPLANE_REPO || join(homedir(), "dev", "waterplane-public");
 const KIT = join(SRC, "packages/plugin-testkit");
 const DIST = join(SRC, "packages/shared/dist/index.js");
 const OUT = new URL("../test/vendor/plugin-testkit/", import.meta.url).pathname;
@@ -95,7 +98,8 @@ export {
   let dirty = false;
   try { dirty = git("status", "--porcelain", "--", "packages/plugin-testkit", "packages/shared").length > 0; } catch {}
   const info = {
-    source: "waterplane main repo",
+    source: "github.com/waterplane-dev/waterplane",
+    tag: (() => { try { return git("describe", "--tags", "--exact-match", "HEAD"); } catch { return null; } })(),
     commit: git("rev-parse", "HEAD"),
     dirty,
     kitPath: "packages/plugin-testkit",
@@ -107,5 +111,5 @@ export {
   // Only now replace the vendored copy, whole.
   mkdirSync(OUT, { recursive: true });
   for (const f of readdirSync(STAGE)) copyFileSync(join(STAGE, f), join(OUT, f));
-  console.log(`synced ${FILES.length} kit files + shared.bundle.mjs (${size} bytes) @ ${info.commit.slice(0, 8)}${dirty ? " (dirty)" : ""}, API ${info.PLUGIN_API_VERSION}`);
+  console.log(`synced ${FILES.length} kit files + shared.bundle.mjs (${size} bytes) @ ${info.tag ?? info.commit.slice(0, 8)}${dirty ? " (dirty)" : ""}, API ${info.PLUGIN_API_VERSION}`);
 } finally { rmSync(tmp, { recursive: true, force: true }); }
