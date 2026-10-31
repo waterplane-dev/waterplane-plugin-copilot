@@ -80,6 +80,7 @@
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { eventsPath } from "./paths.mjs";
+import { readTrustDialog, trustQuestion, TRUST_KEYS, TRUST_MISSES, TRUST_OPTIONS, TRUST_ROWS } from "./trust.mjs";
 
 /**
  * The keys per phone option at Copilot's terminal dialog: Yes and "don't ask again" are the
@@ -406,7 +407,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], asks: new Set(), told: 0, questions: new Map() });
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], asks: new Set(), told: 0, questions: new Map(), trust: null });
   const keysThen = () => (typeof keysThenTyped === "function" ? !!keysThenTyped() : !!keysThenTyped);
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
@@ -767,21 +768,74 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     return held;
   }
 
+  // ── the folder-trust dialog (trust.mjs): off the screen, a person's tap only ──
+
+  let trustMinted = 0;
+
+  /** Read the screen for Copilot's trust dialog: publish it when it appears, retire it once gone. */
+  function checkTrust(slot) {
+    let rows;
+    try { rows = screen(slot.hostId)?.rows(TRUST_ROWS) ?? null; } catch { rows = null; }
+    if (!Array.isArray(rows)) return; // cannot say: what is up stays up
+    const s = st(slot);
+    const seen = readTrustDialog(rows);
+    const r = s.trust;
+    if (seen) {
+      if (r) { r.misses = 0; return; }
+      const t = { id: `copilot-trust-${now()}-${++trustMinted}`, folder: seen.folder, misses: 0, typedAt: null };
+      t.dialog = {
+        id: t.id, kind: "trust",
+        question: trustQuestion(t.folder),
+        options: TRUST_OPTIONS,
+        answer: (choice) => answerTrust(slot, t, choice),
+      };
+      s.trust = t;
+      emit(slot, (w) => w.asked(t.dialog));
+      return;
+    }
+    if (r && ++r.misses >= TRUST_MISSES) retireTrust(slot);
+  }
+
+  function retireTrust(slot) {
+    const s = st(slot);
+    const r = s.trust;
+    if (!r) return;
+    s.trust = null;
+    emit(slot, (w) => w.resolved(r.id));
+  }
+
+  /** A PERSON's tap (the core's gate never lets a plugin answer a trust box): the digit, if the dialog is still up. */
+  async function answerTrust(slot, r, choice) {
+    if (st(slot).trust !== r) return { ok: false, reason: "Copilot's folder-trust question is no longer open — it was answered or withdrawn" };
+    const keys = TRUST_KEYS[choice];
+    if (!keys) return { ok: false, reason: `${choice} is not one of this dialog's options` };
+    if (r.typedAt != null && now() - r.typedAt < KEYS_SETTLE_MS) return { ok: false, reason: "already answered from the phone — waiting for Copilot to close its dialog" };
+    let rows;
+    try { rows = screen(slot.hostId)?.rows(TRUST_ROWS) ?? null; } catch { rows = null; }
+    if (!readTrustDialog(rows)) return { ok: false, reason: "Copilot's folder-trust dialog is not on the screen as it was measured — nothing typed; answer it at the terminal" };
+    r.typedAt = now();
+    return { keys };
+  }
+
   /** Copilot's session ended (`sessionEnd`): every dialog is gone with it. A held hook is left to the core's expiry. */
   function retireAll(slot) {
+    retireTrust(slot);
     for (const r of [...st(slot).open.values()]) retire(slot, r);
     if (st(slot).asks.size) { st(slot).asks.clear(); tellAsks(slot); }
     closeQuestions(slot, false);
   }
 
   /** Something says the terminal moved (the `notification{permission_prompt}` hook): read now, not at the next tick. */
-  function poke(slot) { readTail(slot); }
+  function poke(slot) { readTail(slot); checkTrust(slot); }
 
   /** The events poll runs while anybody watches this slot's dialogs or questions. */
   function poll(slot) {
     const s = st(slot);
     if (!s.timer) {
-      s.timer = setInterval(() => { try { readTail(slot); } catch { /* next tick */ } }, pollMs);
+      s.timer = setInterval(() => {
+        try { readTail(slot); } catch { /* next tick */ }
+        try { checkTrust(slot); } catch { /* next tick */ }
+      }, pollMs);
       s.timer.unref?.();
     }
     return () => { if (!slot.dialogs.size && !(slot.questions?.size) && s.timer) { clearInterval(s.timer); s.timer = null; } };
@@ -808,14 +862,18 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       slot.dialogs.add(on);
       const s = st(slot);
       if (s.asks.size) { try { on.unposed?.(s.asks.size); } catch { /* the host's fault */ } }
+      if (s.trust) { try { on.asked(s.trust.dialog); } catch { /* the host's fault */ } }
       const stop = poll(slot);
+      try { checkTrust(slot); } catch { /* next tick */ }
       return () => { slot.dialogs.delete(on); stop(); };
     },
     async pending(ss) {
       const slot = router.slotFor(ss);
       if (slot.health.state !== "up") return null;
       try { readTail(slot); } catch { return null; }
-      return [...st(slot).open.values()].filter((r) => r.phase !== "done").map((r) => r.dialog);
+      try { checkTrust(slot); } catch { /* the screen cannot say: what is up stays */ }
+      const trust = st(slot).trust;
+      return [...(trust ? [trust.dialog] : []), ...[...st(slot).open.values()].filter((r) => r.phase !== "done").map((r) => r.dialog)];
     },
   };
 
@@ -825,5 +883,5 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     return st(slot).allowAll === false;
   }
 
-  return { answerHook, onEvent, readTail, retireAll, poke, source, questions, allowAllOff };
+  return { answerHook, onEvent, readTail, retireAll, poke, source, questions, allowAllOff, checkTrust };
 }

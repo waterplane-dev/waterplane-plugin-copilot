@@ -112,9 +112,20 @@ during the hold (see below).
   prompt — `sessionStart` only fires after the first one.
 - **Delivery.** Copilot's composer is a `❯` row between two full-width `─` rules, the same shape the
   daemon's echo check already anchors on; the folder-trust dialog is recognised so nothing is typed
-  into it; `/context`, `/usage`, `/env` and the other UI-only slash commands are known to start no
+  into it (see "Folder trust on the phone"); `/context`, `/usage`, `/env` and the other UI-only slash commands are known to start no
   turn.
 
+- **Folder trust on the phone** (`trust.mjs`, measured on 1.0.98, 2026-10-31). A folder Copilot has
+  never seen opens with its own "Confirm folder trust" dialog. The screen is its only source: while
+  it is up Copilot has written no `events.jsonl` and fired no hook, so the dialog source reads the
+  host's screen (`api.screen`, the last 100 rows) on its poll and poses a `kind: "trust"` box —
+  "Yes (this session only)", "Yes, and remember this folder for future sessions", "No (Esc) —
+  Copilot exits", each with what it does. Every piece (title, folder box, question, the three rows,
+  the key hint, the closing border) must be painted, or there is no box; it closes after two reads
+  in a row without it, or when the session ends. A tap types the digit alone (measured: `1`
+  answers, `3` exits; `2` writes the folder into Copilot's `trustedFolders`), and only if the
+  dialog is still on the screen; a second tap within 4 s types nothing. Only a PERSON's tap answers
+  it: the core's answer gate refuses a plugin's answer to a trust box, and the plugin answers none.
 - **Permission dialogs on the phone.** Copilot's `permissionRequest` hook is HELD (the setting
   above) and the request appears on the phone as a box. Its id is the tool call's own `toolCallId`
   (read from `tool.execution_start`; for a non-shell tool, whose hook and call carry different names
@@ -293,8 +304,8 @@ from this probe, both re-checked against the real binary). Every path a person t
 phone — launch, deliver, turn edges, permission allow / deny inside the hold, the terminal dialog
 answered by a tap past it, transcript, AI credits, resume — worked end to end through the real
 host. Caveats, said rather than hidden: the permission modes are parsed but, except `--allow-all`
-(its permission hooks, above), their effect was not exercised; the folder-trust dialog is answered at the terminal (Return), like any
-CLI's. The three limits this verdict used to list are fixed and measured below
+(its permission hooks, above), their effect was not exercised; the folder-trust dialog is answered by a tap on the phone (since
+2026-10-31, above) or at the terminal. The three limits this verdict used to list are fixed and measured below
 ("fix/known-limits").
 
 ## Layout
@@ -306,6 +317,7 @@ CLI's. The three limits this verdict used to list are fixed and measured below
 | `launch.mjs` | binary resolution, argv, env, the instructions file, `askRulesVia` |
 | `hooks.mjs`, `hook/post.mjs` | the generated `--plugin-dir` plugin and the runner its hooks invoke |
 | `delivery.mjs` | the composer / trust / slash literals |
+| `trust.mjs` | the folder-trust dialog read off the screen, its options and keys (posed by `dialogs.mjs`) |
 | `slots.mjs`, `turns.mjs`, `channel.mjs`, `paths.mjs` | one slot per session and which a hook belongs to (`api.bindConversation`); turn edges (the end held for its usage checkpoint); channel health off the session lock |
 | `dialogs.mjs` | the permission dialog source (the held hook, its fall-through, the typed No, option 2's `remember`) and the `ask_user` question source, off the `events.jsonl` tail |
 | `transcript.mjs`, `ledger.mjs`, `context.mjs`, `otel.mjs`, `jsonl.mjs` | the fold + delivery proof, the AI-credit ledger (its document also carries `hourly`, the last 45 days of local-hour rows, and the caps carry `spendUnit: "AI credits"` — both additive for API 2.3, ignored by a 2.2 host), the context sample (checkpoint or span, the fresher), the OTel `chat` span reader, `api.tail` with a reset callback |

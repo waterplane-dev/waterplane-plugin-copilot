@@ -1,0 +1,40 @@
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                    │
+│  ╭─╮╭─╮                            │  Getting started                                                              │
+│  ╰─╯╰─╯  Copilot v1.0.98 uses AI.  │  Use the tabs above to explore your sessions and pull requests                │
+│  █ ▘▝ █  Check for mistakes.       │  /init — Initialize Copilot instructions for this repository                  │
+│   ▔▔▔▔                             │  /model — Switch models across providers, or use Auto                         │
+│                                                                                                                    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ! Failed to load 1 skill. Run /skills for more details.
+
+ ● Tip: /diff
+   └ Review the changes made in the current directory
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                                                                 │
+│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ /private/tmp/claude-501/-Users-someuser-dev-usmc/1865a719-73f5-4c91-97df-2047b8efe173/scratchpad/trusthQzh       │ │
+│ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                      │
+│ Copilot can read files in this folder and, with your permission, edit them or run code and shell commands. It will   │
+│ remember your permissions for the rest of this session.                                                              │
+│                                                                                                                      │
+│ Do you trust the files in this folder?                                                                               │
+│                                                                                                                      │
+│ ❯ 1. Yes                                                                                                             │
+│   2. Yes, and remember this folder for future sessions                                                               │
+│   3. No (Esc)                                                                                                        │
+│                                                                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,30 @@
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+│                                                                            │ ┃
+╰────────────────────────────────────────────────────────────────────────────╯ ┃
+                                                                               ┃
+ ! Failed to load 1 skill. Run /skills for more details.                       ┃
+                                                                               ┃
+ ● Tip: /instructions                                                          ┃
+   └ View and toggle custom instruction files                                  ┃
+                                                                               ┃
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ /private/tmp/claude-501/-Users-someuser-dev-usmc/1865a719-73f5-4c91-97df │ │
+│ │ -2047b8efe173/scratchpad/trust39j8q                                      │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ Copilot can read files in this folder and, with your permission, edit them   │
+│ or run code and shell commands. It will remember your permissions for the    │
+│ rest of this session.                                                        │
+│                                                                              │
+│ Do you trust the files in this folder?                                       │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│   2. Yes, and remember this folder for future sessions                       │
+│   3. No (Esc)                                                                │
+│                                                                              │
+│ ↑/↓ to navigate · enter to select · esc to cancel                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
