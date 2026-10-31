@@ -24,7 +24,7 @@ How close to claude, per fact (`facts` in `host.mjs`):
 | fact | claude | Copilot here | why not more |
 |---|---|---|---|
 | turns | hooks | hooks (`userPromptSubmitted` → started, with the accepted words as `TurnFacts.prompt`; `agentStop` → ended) | — |
-| dialogs | screen boxes | the held permission hook, then Copilot's own dialog by keys | — |
+| dialogs | screen boxes | the held permission hook, then Copilot's own dialog by keys; under `--allow-all` answered `allow` at once (no box) unless an ask rule names it | — |
 | typed "No" reason | yes | **inside the hold**: the hook's `deny` message. **Past it**: `3`, the reason, Return (S3b measured) — only on a host that types keys then words (`api.supports.dialogKeysThenTyped`); today's host has no such answer shape, so it stays Esc | host gap |
 | questions | `question.ts` | `ask_user` posed (its `toolCallId`, the `enum` as options); **a pick answered from the phone** by ↑/↓ + Return | S3 re-read: letters typed at the form land in the COMPOSER as a queued prompt — so never a typed answer; S3c: the highlight read off the screen, then arrows + Return in ONE write, and `tool.execution_complete` carried the pick ("User responded: blue"), nothing queued |
 | instructions | plugin dir | `env-file`: the host writes `session:instructions/AGENTS.md`, `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it (S1) | — |
@@ -95,7 +95,8 @@ during the hold (see below).
   `pick` and `fork` are refused in words.
 - **Permission modes.** `default` (Copilot's Manual Approval), `plan` → `--plan`, `acceptEdits` →
   `--allow-tool=write`, `bypassPermissions` → `--allow-all`. `auto` and `dontAsk` have no Copilot
-  equivalent and are not offered.
+  equivalent and are not offered. The mode and the launch's ask rules are remembered per host
+  session (memory only) for the permission hook: see "Permission dialogs" below.
 - **Hooks without touching your config.** A tiny Copilot plugin (`plugin.json` + `hooks.json`, all
   13 hook names) is generated in the daemon's state dir and passed with `--plugin-dir`. Each hook
   runs `node hook/post.mjs <hook> <sink> <wait>`: node only, no curl. No config or hooks are installed in
@@ -134,6 +135,21 @@ during the hold (see below).
   at the terminal"). The box stays open until `permission.completed` retires it, whoever answered;
   requests a hook decided (`resolvedByHook`) never become boxes. While the side channel is down
   there are no boxes (`pending()` says "cannot say").
+- **Under `--allow-all` (bypassPermissions) nothing is held, except what an ask rule names.**
+  Measured 2026-10-31 (TUI 1.0.91, 1.0.98 on disk, through a real host, `--allow-all` in `ps`):
+  Copilot STILL fires `permissionRequest` for ordinary calls (`{"toolName":"bash","toolInput":
+  {"command":"git status --short --branch"},"permissionSuggestions":[]}`, `git log`, `mkdir`, file
+  edits) — one debugging task held ~8 phone boxes in 3 minutes, and an unattended turn stalled at
+  each. Now such a hook is answered `{behavior:"allow"}` at once, no box: what the launch already told
+  Copilot. Not `{}`, which in the default mode brings up Copilot's own dialog (measured) and under
+  `--allow-all` is unmeasured. Still held and asked exactly as in the default mode: a request one of
+  the launch's ask rules names (`req.askRules`, matched over the box's words the way the host's gate
+  matches them — `askrules.ts`'s `askRuleMatches`, mirrored in `dialogs.mjs`), so the host's answer
+  gate (`askRulesVia: "gate"`) keeps it a person's tap; a request whose payload names a sandbox; a
+  session whose `events.jsonl` last said `session.permissions_changed {allowAllPermissions: false}`;
+  and a session this daemon did not launch since its last start (a re-attach after a restart: the
+  mode is memory only). A Shift+Tab into autopilot does NOT start answering for a session launched
+  without `--allow-all`: only the launch flag does.
 - **"Don't ask again" during the hold is a rule waterplane's answer gate keeps, and says so.**
   Copilot's hook output is allow / deny (+ message, interrupt) — nothing in it persists a rule, and
   the hook is asked again for the identical command (measured). So option 2 during the hold reads
@@ -178,7 +194,8 @@ during the hold (see below).
 | A turn aborted while nobody watches | its end comes from the `abort` line, which is read while a phone watches the session; otherwise the host's own fallback ends it |
 | Model list | the binary's own, per account: `copilot --acp --stdio` → `session/new` → `models.availableModels` (models.mjs), asked once per host boot; the throwaway session is closed and its dir removed. `auto` is an alias, every id hosted. Any failure ⇒ empty ⇒ the free-text field |
 | `--no-remote` | exists on 1.0.91 but not passed: remote control is off by default (`remoteSteerable: false`) and no config key turns it on |
-| `--plan`, `--allow-tool=write`, `--allow-all`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised. `--reasoning-effort` too (S4b: ignored under Auto), and is not passed |
+| `--plan`, `--allow-tool=write`, `--continue` | accepted by the 1.0.91 parser; their effect on a session was not exercised. `--reasoning-effort` too (S4b: ignored under Auto), and is not passed |
+| `--allow-all` | measured 2026-10-31 (1.0.91 TUI / 1.0.98): Copilot still fires `permissionRequest` for ordinary shell calls and file edits; the plugin answers them `allow` at once unless an ask rule names them (above). Not measured: whether Copilot would run the call on a `{}` answer under `--allow-all`, and what an ask-rule hold that expires unanswered (`{}`) then does there |
 
 ## Measured on 1.0.91
 
@@ -275,8 +292,8 @@ clean. **0.72 AIC in all** (0.26 + 0.47, `session.usage_checkpoint`). The second
 from this probe, both re-checked against the real binary). Every path a person takes from the
 phone — launch, deliver, turn edges, permission allow / deny inside the hold, the terminal dialog
 answered by a tap past it, transcript, AI credits, resume — worked end to end through the real
-host. Caveats, said rather than hidden: the permission modes are parsed but their
-effect was not exercised; the folder-trust dialog is answered at the terminal (Return), like any
+host. Caveats, said rather than hidden: the permission modes are parsed but, except `--allow-all`
+(its permission hooks, above), their effect was not exercised; the folder-trust dialog is answered at the terminal (Return), like any
 CLI's. The three limits this verdict used to list are fixed and measured below
 ("fix/known-limits").
 

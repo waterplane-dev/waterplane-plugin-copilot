@@ -25,7 +25,7 @@ import { DELIVERY } from "./delivery.mjs";
 import { createSlots } from "./slots.mjs";
 import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
-import { createDialogs, RULE_LABEL } from "./dialogs.mjs";
+import { createDialogs, hookAskRuleHit, RULE_LABEL } from "./dialogs.mjs";
 import { copilotHome } from "./paths.mjs";
 import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
@@ -159,8 +159,57 @@ export function showRules(api, slot) {
   for (const k of [...known]) if (!rules.some((r) => r.key === k)) known.delete(k);
 }
 
+/** How many launches' modes are remembered (a host session relaunched overwrites its own). */
+export const LAUNCHES_MAX = 500;
+
+/**
+ * Each launch's permission mode and ask rules, by HOST session id (`req.hostSessionId` at
+ * `prepare`, `slot.hostId` at a hook — the one id both ends have, `--continue` included).
+ * Memory only: a session re-attached after a daemon restart is not known here, so its permission
+ * hooks are held as in the default mode (the safe direction).
+ */
+export function createLaunchModes() {
+  const byHost = new Map();
+  return {
+    note(req) {
+      const sid = typeof req?.hostSessionId === "string" ? req.hostSessionId : "";
+      if (!sid) return;
+      byHost.delete(sid);
+      byHost.set(sid, {
+        permissionMode: req?.launch?.permissionMode ?? "default",
+        askRules: Array.isArray(req?.askRules) ? req.askRules.filter((r) => typeof r === "string") : [],
+      });
+      while (byHost.size > LAUNCHES_MAX) byHost.delete(byHost.keys().next().value);
+    },
+    get: (sid) => byHost.get(sid) ?? null,
+  };
+}
+
+/**
+ * The answer to a permission hook in a session launched `--allow-all` (bypassPermissions), or null
+ * to handle it as in any other mode. Measured 2026-10-31 (TUI 1.0.91, 1.0.98 on disk): under
+ * `--allow-all` Copilot STILL fires `permissionRequest` for ordinary shell calls (`git status`,
+ * `mkdir`, file edits), and holding each one as a phone box stalled every unattended turn in the
+ * mode a person picks so that nothing asks. So it is allowed at once — `{behavior: "allow"}`, what
+ * the person's launch already told Copilot. Not `{}`: in the default mode `{}` brings up Copilot's
+ * own dialog (measured), and what it does under `--allow-all` is not measured.
+ * Null (held as today) when: the launch was not allow-all or is not known; Copilot's log says
+ * allow-all is now off; the request names a sandbox (never answered for the person); or the
+ * request matches an ask rule the launch carried — those stay a person's tap, through the box and
+ * the host's answer gate (`askRulesVia: "gate"`).
+ */
+export function allowAllAnswer({ launches, dialogs, slot, payload }) {
+  const l = launches?.get(slot?.hostId);
+  if (!l || l.permissionMode !== "bypassPermissions") return null;
+  if (typeof payload?.toolName !== "string" || !payload.toolName.trim()) return null;
+  if (/sandbox/i.test(JSON.stringify(payload))) return null;
+  if (hookAskRuleHit(l.askRules, payload)) return null;
+  if (dialogs?.allowAllOff?.(slot)) return null;
+  return { behavior: "allow" };
+}
+
 /** The `onHook` handler. Exported for tests. */
-export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, ruleAllows = null }) {
+export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, ruleAllows = null, launches = null }) {
   return (body, hold) => {
     const msg = parseHookPost(body);
     if (!msg) return {};
@@ -181,6 +230,9 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
       // anybody watching" test: it is their standing answer.
       const byRule = ruleAllows?.(slot, msg.payload);
       if (byRule) return byRule;
+      // Launched `--allow-all`: answered at once unless an ask rule (or a sandbox) needs a person.
+      const byMode = allowAllAnswer({ launches, dialogs, slot, payload: msg.payload });
+      if (byMode) return byMode;
       // Nobody can answer it from the phone (no phone on the session, the gate off): do not make the
       // desk wait out the hold for nothing. Copilot's own dialog shows at once; a phone that attaches
       // later finds it through `pending()` (the tui phase, read off events.jsonl).
@@ -194,7 +246,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
 }
 
 /** The backend definition handed to `api.backend`. Exported for tests. */
-export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null, home = null }) {
+export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null, home = null, launches = null }) {
   const tail = (p, on, o) => api.tail(p, on, o);
   const env = (k) => api.env(k);
   // COPILOT_HOME is resolved ONCE (activate) and every consumer reads that one value: the ledger
@@ -217,7 +269,9 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     // A refused mode THROWS its sentence (the host shows it; nothing is spawned).
     async prepare(req) {
       refreshHooks(); // the sink's port is today's; a hooks.json from an older run would post nowhere
-      return buildLaunch(req, { pluginDir, otelDir });
+      const plan = buildLaunch(req, { pluginDir, otelDir });
+      launches?.note(req); // only a launch that was built: a refused mode throws above
+      return plan;
     },
     delivery: DELIVERY,
     caps: CAPS,
@@ -293,7 +347,8 @@ export function activate(api) {
   let showStatus = () => {}; // set below, once the binary is resolved; settings re-say it
   // A fresh key per activation: the runner reads it at each hook and prints only answers sealed
   // with it, so a process squatting the sink's port while the daemon is down cannot approve.
-  const handler = sealHookHandler(makeHookHandler({ router, dialogs, attended, ruleAllows }), hookKey(pluginDir, { fresh: true }));
+  const launches = createLaunchModes();
+  const handler = sealHookHandler(makeHookHandler({ router, dialogs, attended, ruleAllows, launches }), hookKey(pluginDir, { fresh: true }));
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);
@@ -304,7 +359,7 @@ export function activate(api) {
     showStatus();
   });
 
-  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context, home }));
+  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context, home, launches }));
   api.on("action", (e) => {
     if (e.action !== FORGET_ACTION) return { ok: false, message: `unknown action ${e.action}` };
     if (!rulesOn) return { ok: false, message: "This waterplane keeps no allow rules (it is older than standing rules)." };

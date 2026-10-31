@@ -326,6 +326,35 @@ function sameCall(toolName, toolInput, d) {
   for (const m of d.arguments.matchAll(PATCH_FILE_RE)) if (m[1].trim() === file) return true;
   return false;
 }
+/**
+ * An ask rule against text — the SAME rule as the host's gate (usmc `packages/host/src/askrules.ts`,
+ * `askRuleMatches`): the pattern inside `Tool(...)` is looked for anywhere, `*` is any run, case and
+ * whitespace runs are ignored; a bare tool rule or a pattern of only `*` matches nothing. Matching
+ * too much holds a request for a person's tap, which is the safe direction.
+ */
+export function askRuleMatches(rule, text) {
+  const m = /^[A-Za-z][A-Za-z0-9_-]*\((.+)\)$/.exec(String(rule ?? "").trim());
+  const pat = m?.[1]?.trim();
+  if (!pat || !pat.replace(/\*/g, "").trim()) return false;
+  const norm = (x) => String(x).replace(/\s+/g, " ").toLowerCase();
+  const re = norm(pat).split("*").map((q) => q.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s*")).join(".*");
+  return new RegExp(re).test(norm(text));
+}
+
+/**
+ * The ask rule a `permissionRequest` hook payload names, or null: over the words its box would show
+ * (the shell question and command line; a tool's name, its file and its whole input).
+ */
+export function hookAskRuleHit(rules, payload) {
+  if (!Array.isArray(rules) || !rules.length) return null;
+  const toolName = str(payload?.toolName) ?? "";
+  const input = payload?.toolInput && typeof payload.toolInput === "object" ? payload.toolInput : null;
+  const text = SHELL_TOOLS.has(toolName)
+    ? ["Do you want to run this command?", str(input?.command) ?? ""].join("\n")
+    : [`Copilot asks permission to ${toolName} ${pathOf(input) ?? ""}`, input ? JSON.stringify(input) : ""].join("\n");
+  return rules.find((r) => typeof r === "string" && askRuleMatches(r, text)) ?? null;
+}
+
 /** The file a non-shell hook input is about (`edit {file_path}` measured; `path` / `fileName` tolerated). */
 const pathOf = (input) => (input && typeof input === "object" ? str(input.file_path) ?? str(input.path) ?? str(input.fileName) : null);
 
@@ -614,6 +643,12 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         if (!quiet) { const at = Date.parse(e.timestamp); try { onAbort(slot, Number.isFinite(at) ? at : now()); } catch { /* the host's fault */ } }
         return;
       }
+      case "session.permissions_changed":
+        // Copilot's own allow-all switch (`/allow-all`, the launch flag; seen 1.0.91 as on → off → on
+        // within 3 ms at a `--allow-all` start). Kept so an allow-all launch stops being answered for
+        // once Copilot says allow-all is OFF — never to start answering for one launched without it.
+        if (typeof d.allowAllPermissions === "boolean") s.allowAll = d.allowAllPermissions;
+        return;
       case "session.shutdown": case "session.start": case "session.resume":
         // Copilot exited or (re)started: nothing asked before is still on its screen.
         for (const r of [...s.open.values()]) if (r.phase !== "hook") drop(r);
@@ -784,5 +819,11 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     },
   };
 
-  return { answerHook, onEvent, readTail, retireAll, poke, source, questions };
+  /** Has Copilot's log said allow-all is OFF now (`session.permissions_changed`)? Reads the tail first. */
+  function allowAllOff(slot) {
+    try { readTail(slot); } catch { /* unreadable: the launch decides */ }
+    return st(slot).allowAll === false;
+  }
+
+  return { answerHook, onEvent, readTail, retireAll, poke, source, questions, allowAllOff };
 }
