@@ -22,6 +22,8 @@
  */
 
 /** The input row. `❯` only, never `>` (same reasoning as the host's own copy). */
+import { isLocalCommand } from "./commands.mjs";
+
 export const COMPOSER_CURSOR_RE = /^❯(?:[\s ]|$)/;
 
 /** The composer's full-width rules, above and below the input row. */
@@ -35,23 +37,8 @@ export const COMPOSER_RULE_RE = /^[─━┄┅┈┉]{20,}$/;
  */
 export const TRUST_PROMPT_RE = /confirmfoldertrust|rememberthisfolderforfuturesessions/;
 
-/**
- * Slash commands that run inside the TUI and start no agent turn. Measured:
- * `/context`, `/usage`, `/env` left no `events.jsonl` line and fired no hook
- * (scorecard row 2). The rest are pure UI by what they do (pickers, help,
- * leaving); a name not here is treated as a prompt, which only costs the host
- * a slower proof, never a wrong one.
- */
-const LOCAL_COMMANDS = new Set([
-  "context", "usage", "env", // measured
-  "help", "model", "exit", "quit", "clear", "new", "resume", "session",
-  "mcp", "plugin", "skills", "permissions", "allow-all", "statusline", "theme", "login", "logout",
-]);
-
-export function isLocalCommand(text) {
-  const m = /^\/([a-z][a-z0-9-]*)(?:\s|$)/i.exec(String(text ?? "").trim());
-  return !!m && LOCAL_COMMANDS.has(m[1].toLowerCase());
-}
+/** Starts no agent turn: the one table in commands.mjs (`SLASH`), shared with the command list. */
+export { isLocalCommand };
 
 /**
  * The `delivery` block of the backend definition.
