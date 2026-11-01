@@ -337,8 +337,10 @@ export function askRuleMatches(rule, text) {
 }
 
 /**
+ * twin: gateText
  * The words the host's answer gate would match an ask rule on, for the box this hook would publish
- * (usmc `answergate.ts`: the question, then each option label) — built by the SAME `questionOf` and
+ * (usmc `answergate.ts`: the question, then each option's label — `gateRefusal` — or each label
+ * with its `remember` key and label — `dialogAskRuleHit`) — built by the SAME `questionOf` and
  * option lists the box is built from, so the two cannot drift. A shell box names the call's intention
  * only when the tool call is on disk by then, so both boxes are given. The hook's whole input follows,
  * unclipped (the box clips it): matching more holds for a person's tap, the safe direction.
@@ -349,10 +351,14 @@ export function hookBoxWords(payload, { rulesSupported = true } = {}) {
   const shell = SHELL_TOOLS.has(toolName);
   const command = shell ? str(input?.command) ?? "" : null;
   const r = { shell, toolName, command, toolInput: shell ? null : input, intention: null, phase: "hook", prompt: null };
-  const labels = (shell ? shellOptions(identOf(command, null), "hook", { command, rulesSupported }) : TOOL_OPTIONS).map((o) => o.label);
-  const boxes = [[questionOf(r), ...labels]];
+  const options = shell ? shellOptions(identOf(command, null), "hook", { command, rulesSupported }) : TOOL_OPTIONS;
+  // the gate's two readings: `gateRefusal` (each label) and `dialogAskRuleHit` (each label, then any
+  // `remember` key and label)
+  const readings = [options.map((o) => o.label),
+    options.flatMap((o) => [o.label, o.remember?.key, o.remember?.label].filter((x) => typeof x === "string"))];
   const intention = shell ? str(input?.description) : null;
-  if (intention) boxes.push([questionOf({ ...r, intention }), ...labels]);
+  const questions = [questionOf(r), ...(intention ? [questionOf({ ...r, intention })] : [])];
+  const boxes = questions.flatMap((q) => readings.map((l) => [q, ...l]));
   return boxes.map((b) => b.join("\n")).concat(input ? [JSON.stringify(input)] : []);
 }
 

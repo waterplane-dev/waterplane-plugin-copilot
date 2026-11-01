@@ -147,3 +147,9 @@ test("allow-all matches on the box that names the call's intention too (the tool
   }
   assert.ok(checked > 5 && ID2);
 });
+
+test("allow-all also reads the box as the host's dialogAskRuleHit does: a row's remember key follows its label", async () => {
+  // the hook-phase rule row: label "...in this session", then remember.key = the command line
+  const { post } = await launched("bypassPermissions", { askRules: ["Bash(in this session git push)"] });
+  assert.ok(post({ command: "git push origin main" }) instanceof Promise, "held for a person's tap");
+});
