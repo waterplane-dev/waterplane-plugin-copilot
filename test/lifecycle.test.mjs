@@ -70,3 +70,26 @@ test("an attach whose first poll throws leaves no slot behind", async () => {
   assert.equal(router.peek("host-A"), null);
   assert.equal(router.route(hook), null);
 });
+
+test("two live sessions on one Copilot id: when the newer closes, the older gets the id back", () => {
+  const router = createSlots();
+  const a = router.hold(A);
+  const b = router.hold(B);
+  assert.equal(router.route(hook), b.slot, "the newer session takes the id");
+  b.drop();
+  assert.equal(router.route(hook), a.slot, "A still runs that Copilot session: its hooks reach it");
+  assert.equal(router.has(P), true, "a live session's id is held (conversation delete refuses it)");
+  a.drop();
+  assert.equal(router.has(P), false);
+});
+
+test("two live sessions on one Copilot id: when the routed one follows a /fork, the other keeps the id", () => {
+  const X = "99999999-2222-4333-8444-555555555555";
+  const router = createSlots();
+  router.setForkReader((ss) => (ss.id === "host-B" ? X : null));
+  const a = router.hold(A);
+  const b = router.hold(B);
+  assert.equal(router.route({ sessionId: X, cwd: "/tmp" }), b.slot, "B typed /fork");
+  assert.equal(router.route(hook), a.slot, "A still runs P");
+  assert.equal(router.has(P), true);
+});

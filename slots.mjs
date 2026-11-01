@@ -107,8 +107,21 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
       while (goneForks.size > STRAYS_MAX) goneForks.delete(goneForks.keys().next().value);
     }
     if (byHost.get(slot.hostId) === slot) byHost.delete(slot.hostId);
-    if (slot.id && byId.get(slot.id) === slot) byId.delete(slot.id);
+    if (slot.id && byId.get(slot.id) === slot) handBack(slot.id, slot);
     unbound.delete(slot);
+  }
+
+  /**
+   * `from` stops routing Copilot id `id` (released, or it followed a /fork away). Two live host
+   * sessions on one id (`--resume P` twice): the newer took it; the older still runs that session,
+   * so its hooks — and `has`, which guards a conversation delete — go back to it: the newest other
+   * open slot on that id, else nobody.
+   */
+  function handBack(id, from) {
+    byId.delete(id);
+    let heir = null;
+    for (const s of byHost.values()) if (s !== from && s.id === id) heir = s;
+    if (heir) byId.set(id, heir);
   }
 
   function adopt(slot, id) {
@@ -157,8 +170,8 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   /**
    * `/fork` typed inside a live Copilot: the TUI continues AS the fork, so its hooks carry an id
    * this router never issued. The slot whose OWN log (`session.info {infoType:"fork"}`) names that
-   * id takes it over; the old id is dropped (that process now runs the fork, and an old-id hook
-   * can only come from a different, later launch). Never by cwd: a subagent's hooks keep routing nowhere.
+   * id takes it over; the old id goes to another live slot still on it, if any (`handBack`), else is
+   * dropped (that process now runs the fork, so an old-id hook comes from another launch). Never by cwd: a subagent's hooks keep routing nowhere.
    */
   function followFork(sid) {
     if (!forkReader || followed.has(sid)) return null;
@@ -171,7 +184,7 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
       let to = null;
       try { to = forkReader(slot.ss); } catch { to = null; }
       if (to !== sid) continue;
-      if (byId.get(slot.id) === slot) byId.delete(slot.id);
+      if (byId.get(slot.id) === slot) handBack(slot.id, slot);
       (slot.forkedFrom ??= []).push(slot.id);
       slot.id = sid;
       strays.delete(sid);
