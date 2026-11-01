@@ -18,6 +18,7 @@
 import { open, readdir, realpath, rm, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { liveHolder, logHolder, SESSION_ID_RE, workspaceFields } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 export const LIST_LIMIT = 200;
 /** Only the head of `events.jsonl` is read for a listing: the first prompt is near the top. */
@@ -34,14 +35,14 @@ const oneLine = (s, max) => {
 
 const real = async (p) => {
   if (typeof p !== "string" || !p) return null;
-  try { return await realpath(p); } catch { return p; }
+  try { return await realpath(p); } catch (e) { readFailed(e, "resolving a real path", p); return p; }
 };
 
 /** The complete JSON lines in the head of a file — through the first `user.message` line, within
  *  HEAD_MAX (a cut last line is dropped). */
 async function headLines(path) {
   let fh;
-  try { fh = await open(path, "r"); } catch { return []; }
+  try { fh = await open(path, "r"); } catch (e) { readFailed(e, "opening a conversation log", path); return []; }
   try {
     let buf = Buffer.alloc(0), full = false;
     while (buf.length < HEAD_MAX) {
@@ -88,7 +89,7 @@ async function describe(dir) {
 export async function listConversations(home, cwd, { limit = LIST_LIMIT } = {}) {
   const root = join(home, "session-state");
   let names;
-  try { names = await readdir(root); } catch { return null; }
+  try { names = await readdir(root); } catch (e) { readFailed(e, "reading the session list", root); return null; }
   const want = await real(cwd);
   if (!want) return [];
   const rows = [];
@@ -96,7 +97,7 @@ export async function listConversations(home, cwd, { limit = LIST_LIMIT } = {}) 
     if (!SESSION_ID_RE.test(id)) continue;
     const dir = join(root, id);
     let st;
-    try { st = await stat(join(dir, "events.jsonl")); } catch { continue; } // never prompted
+    try { st = await stat(join(dir, "events.jsonl")); } catch (e) { readFailed(e, "statting a session's events log", dir); continue; } // never prompted
     if (!st.isFile()) continue;
     const d = await describe(dir);
     if (!d.cwd || (await real(d.cwd)) !== want) continue;
@@ -117,7 +118,7 @@ export async function removeConversation(home, cwd, id, { alive, held = () => fa
   const root = join(home, "session-state");
   const dir = join(root, id);
   let realRoot, realDir;
-  try { realRoot = await realpath(root); realDir = await realpath(dir); } catch { return { ok: false, reason: "no such conversation" }; }
+  try { realRoot = await realpath(root); realDir = await realpath(dir); } catch (e) { readFailed(e, "resolving a conversation's real path", dir); return { ok: false, reason: "no such conversation" }; }
   if (realDir !== join(realRoot, id) || !realDir.startsWith(realRoot + sep)) {
     return { ok: false, reason: "that conversation's folder is not inside Copilot's session-state folder, so it is left alone" };
   }
@@ -131,7 +132,7 @@ export async function removeConversation(home, cwd, id, { alive, held = () => fa
   if (liveHolder(realDir, ...holderArgs) !== null || logHolder(home, lid, ...holderArgs) !== null) {
     return { ok: false, reason: "that conversation is open in a Copilot process on this desktop — close it there first" };
   }
-  try { await rm(realDir, { recursive: true, force: false }); } catch { return { ok: false, reason: "delete failed" }; }
+  try { await rm(realDir, { recursive: true, force: false }); } catch (e) { readFailed(e, "deleting a conversation", realDir); return { ok: false, reason: `delete failed (${e?.code ?? "error"})` }; }
   return { ok: true };
 }
 

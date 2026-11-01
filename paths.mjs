@@ -11,6 +11,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readFailed } from "./warn.mjs";
 
 /** `COPILOT_HOME`, else `~/.copilot`. `env` is a reader so a plugin can hand in `api.env`. */
 export function copilotHome(env = (k) => process.env[k]) {
@@ -34,7 +35,7 @@ const pidAlive = (pid) => {
  */
 export function liveHolder(dir, alive = pidAlive) {
   let names;
-  try { names = readdirSync(dir); } catch { return null; }
+  try { names = readdirSync(dir); } catch (e) { readFailed(e, "reading a directory", dir); return null; }
   for (const n of names) {
     const m = /^inuse\.(\d+)\.lock$/.exec(n);
     if (m && alive(Number(m[1]))) return Number(m[1]);
@@ -53,7 +54,7 @@ export function workspaceFields(dir) {
   const p = join(dir, "workspace.yaml");
   if (!existsSync(p)) return null;
   let text;
-  try { text = readFileSync(p, "utf8"); } catch { return null; }
+  try { text = readFileSync(p, "utf8"); } catch (e) { readFailed(e, "reading a file", p); return null; }
   const out = {};
   for (const m of text.matchAll(/^([a-z_]+):[ \t]*(.*)$/gm)) out[m[1]] = yamlScalar(m[2].trim());
   return out;
@@ -95,7 +96,7 @@ const LOG_READ_MAX = 1024 * 1024;
 
 function lastWorkspace(path) {
   let fd;
-  try { fd = openSync(path, "r"); } catch { logCache.delete(path); return null; }
+  try { fd = openSync(path, "r"); } catch (e) { readFailed(e, "opening a log", path); logCache.delete(path); return null; }
   try {
     const size = fstatSync(fd).size;
     let c = logCache.get(path);
@@ -118,7 +119,7 @@ function lastWorkspace(path) {
 export function logHolder(home, id, alive = pidAlive) {
   const dir = join(home, "logs");
   let names;
-  try { names = readdirSync(dir); } catch { return null; }
+  try { names = readdirSync(dir); } catch (e) { readFailed(e, "listing Copilot's logs dir", dir); return null; }
   const want = String(id).toLowerCase();
   for (const n of names) {
     const m = /^process-\d+-(\d+)\.log$/.exec(n);

@@ -16,6 +16,7 @@ import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionDir, SESSION_ID_RE, workspaceCwd } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 // Generous on purpose: the host asks while it boots, and its event loop was
 // measured busy ~24 s then — the reply had arrived but went unread past a 20 s clock.
@@ -58,9 +59,9 @@ export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS,
   return new Promise((resolve) => {
     // a cwd of its own: a session the probe opened is then provably the probe's (see sweep)
     let cwd;
-    try { cwd = mkdtempSync(join(tmpdir(), "wp-copilot-models-")); } catch { cwd = tmpdir(); }
+    try { cwd = mkdtempSync(join(tmpdir(), "wp-copilot-models-")); } catch (e) { readFailed(e, "creating the models probe's temp dir", tmpdir()); cwd = tmpdir(); }
     const own = cwd !== tmpdir();
-    const dropCwd = () => { if (own) try { rmSync(cwd, { recursive: true, force: true }); } catch { /* left behind */ } };
+    const dropCwd = () => { if (own) try { rmSync(cwd, { recursive: true, force: true }); } catch (e) { readFailed(e, "removing the models probe's temp dir", cwd); /* left behind */ } };
     let child;
     try {
       child = spawnFn(bin, ["--acp", "--stdio"], {
@@ -74,20 +75,20 @@ export function readModels({ bin, home, env = {}, timeoutMs = MODELS_TIMEOUT_MS,
     // so a shutdown write cannot put it back.
     const removeSession = () => {
       if (!sessionId || !home || !SESSION_ID_RE.test(sessionId)) return;
-      try { rmSync(sessionDir(home, sessionId), { recursive: true, force: true }); } catch { /* left behind */ }
+      try { rmSync(sessionDir(home, sessionId), { recursive: true, force: true }); } catch (e) { readFailed(e, "removing the models probe's session dir", home); /* left behind */ }
     };
     // timed out after session/new went out and before its reply: no id, but Copilot may already
     // have made the dir — remove only one whose workspace.yaml names this probe's own temp cwd
     const sweep = () => {
       if (sessionId || !asked || !own || !home) return;
       const cwds = new Set([cwd]);
-      try { cwds.add(realpathSync(cwd)); } catch { /* gone */ }
+      try { cwds.add(realpathSync(cwd)); } catch (e) { readFailed(e, "resolving the models probe's cwd", cwd); }
       let ids = [];
-      try { ids = readdirSync(join(home, "session-state")); } catch { return; }
+      try { ids = readdirSync(join(home, "session-state")); } catch (e) { readFailed(e, "reading the session list", home); return; }
       for (const id of ids) {
         if (!SESSION_ID_RE.test(id)) continue;
         const dir = sessionDir(home, id);
-        if (cwds.has(workspaceCwd(dir))) try { rmSync(dir, { recursive: true, force: true }); } catch { /* left behind */ }
+        if (cwds.has(workspaceCwd(dir))) try { rmSync(dir, { recursive: true, force: true }); } catch (e) { readFailed(e, "removing a leftover probe session dir", dir); /* left behind */ }
       }
     };
     let exited = false;

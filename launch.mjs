@@ -51,6 +51,7 @@ import { randomUUID } from "node:crypto";
 import { accessSync, constants, mkdirSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { SESSION_ID_RE } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 /** Always in the spawn env (`spawnEnv`), whatever the launch. */
 export const SPAWN_ENV = Object.freeze({ COPILOT_AUTO_UPDATE: "false" });
@@ -72,7 +73,7 @@ export const PERMISSION_FLAGS = Object.freeze({
 export const PERMISSION_MODES = Object.freeze(Object.keys(PERMISSION_FLAGS));
 
 const executable = (p) => {
-  try { accessSync(p, constants.X_OK); return true; } catch { return false; }
+  try { accessSync(p, constants.X_OK); return true; } catch (e) { readFailed(e, "checking a binary is executable", p, ["EACCES"]); return false; }
 };
 
 /**

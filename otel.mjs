@@ -20,6 +20,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { drain, follow, tick } from "./jsonl.mjs";
 import { SESSION_ID_RE } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 /** A cheap pre-filter: the exporter's other spans (invoke_agent carries a long attribute list) are never parsed. */
 const CHAT_LINE = /"gen_ai\.operation\.name"\s*:\s*"chat"/;
@@ -70,13 +71,13 @@ export function createOtelReader(dir, { tail, now = Date.now, maxWindows } = {})
   let names = [];
   /** The files to read now (opened on first sight), or null when the dir is absent. */
   function list() {
-    try { names = readdirSync(dir).filter((n) => n.endsWith(".jsonl")); } catch { names = []; return null; }
+    try { names = readdirSync(dir).filter((n) => n.endsWith(".jsonl")); } catch (e) { readFailed(e, "reading the span dir", dir); names = []; return null; }
     const cut = now() - SPAN_KEEP_MS;
     const live = [];
     for (const n of names) {
       const p = join(dir, n);
       let mtime;
-      try { mtime = statSync(p).mtimeMs; } catch { continue; }
+      try { mtime = statSync(p).mtimeMs; } catch (e) { readFailed(e, "statting a span file", p); continue; }
       let f = files.get(p);
       if (mtime < cut) {
         if (done.has(p)) continue;

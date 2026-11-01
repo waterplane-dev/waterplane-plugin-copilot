@@ -40,6 +40,7 @@ import { join } from "node:path";
 import { drain, follow, tick } from "./jsonl.mjs";
 import { createOtelReader } from "./otel.mjs";
 import { SESSION_ID_RE } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 const localDay = (t) => {
   const d = new Date(t);
@@ -73,7 +74,7 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
   async function scanSessions() {
     const root = join(home, "session-state");
     let ids;
-    try { ids = readdirSync(root); } catch { return false; }
+    try { ids = readdirSync(root); } catch (e) { readFailed(e, "reading the session list", root); return false; }
     for (const id of ids) {
       if (!SESSION_ID_RE.test(id)) continue;
       const p = join(root, id, "events.jsonl");
@@ -131,7 +132,7 @@ export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
     const countFrom = (s) => {
       let at = firstSpan.get(s.id), bySpan = at != null;
       if (!bySpan && fileIds.has(s.id)) {
-        try { const st = statSync(join(otelDir, `${s.id}.jsonl`)); at = Math.min(st.birthtimeMs > 0 ? st.birthtimeMs : Infinity, st.mtimeMs); } catch { at = null; }
+        try { const st = statSync(join(otelDir, `${s.id}.jsonl`)); at = Math.min(st.birthtimeMs > 0 ? st.birthtimeMs : Infinity, st.mtimeMs); } catch (e) { readFailed(e, "statting a span file", otelDir); at = null; }
       }
       if (at == null) return -Infinity;
       let start = null;

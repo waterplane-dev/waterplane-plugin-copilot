@@ -41,6 +41,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { follow } from "./jsonl.mjs";
 import { eventsPath, SESSION_ID_RE } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 const WANT = ["session.info", "session.mode_changed", "session.start", "session.resume", "session.shutdown", "\"agentMode\"", "session.compaction_", "session.usage_record", "session.usage_checkpoint",
   "subagent.", "exit_plan_mode", "tool.execution_complete", "\"abort\""];
@@ -219,7 +220,7 @@ export function createSessionLog({ home, idOf, tail }) {
   function planText(ss, plan) {
     const id = idFor(ss), h = homeDir();
     let file = "";
-    try { if (id && h) file = readFileSync(join(h, "session-state", id, "plan.md"), "utf8").trim(); } catch { /* none */ }
+    try { if (id && h) file = readFileSync(join(h, "session-state", id, "plan.md"), "utf8").trim(); } catch (e) { readFailed(e, "reading the session plan", h); /* none */ }
     return file || plan.summary;
   }
   /** The id this session's own log says it was forked into, or null. */

@@ -20,10 +20,11 @@
  */
 import { realpathSync } from "node:fs";
 import { SESSION_ID_RE } from "./paths.mjs";
+import { readFailed } from "./warn.mjs";
 
 const real = (p) => {
   if (typeof p !== "string" || !p) return null;
-  try { return realpathSync(p); } catch { return p; }
+  try { return realpathSync(p); } catch (e) { readFailed(e, "resolving a session cwd", p); return p; }
 };
 
 /** How many delivered prompts an unbound slot remembers, and how many stray ids are kept. */

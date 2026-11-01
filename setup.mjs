@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { copilotHome } from "./paths.mjs";
 import { binFound, resolveBin } from "./launch.mjs";
 import { copilotVersion } from "./host.mjs";
+import { readFailed } from "./warn.mjs";
 
 export const SIGNED_IN_ROW = "copilot-signed-in";
 const ENV_TOKENS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
@@ -31,7 +32,7 @@ export function copilotSignIn(env = (k) => process.env[k], home = copilotHome(en
   try {
     const text = readFileSync(file, "utf8").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
     cfg = JSON.parse(text);
-  } catch { return { state: "unknown" }; }
+  } catch (e) { readFailed(e, "reading the Copilot config", file); return { state: "unknown" }; }
   if (!cfg || typeof cfg !== "object") return { state: "unknown" };
   const list = cfg.loggedInUsers ?? cfg.logged_in_users;
   const users = [cfg.lastLoggedInUser ?? cfg.last_logged_in_user, ...(Array.isArray(list) ? list : [])];

@@ -82,6 +82,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { SHELL_TOOLS, callFiles, inputFile, resolvePath } from "./toolcalls.mjs";
 import { eventsPath } from "./paths.mjs";
 import { readTrustDialog, trustQuestion, TRUST_KEYS, TRUST_MISSES, TRUST_OPTIONS, TRUST_ROWS } from "./trust.mjs";
+import { readFailed } from "./warn.mjs";
 
 /**
  * The keys per phone option at Copilot's terminal dialog: Yes and "don't ask again" are the
@@ -384,7 +385,7 @@ const rawCwd = (slot) => str(slot.ss?.cwd) ?? slot.cwd;
  */
 function readLines(path, from, max, dropFirst = false) {
   let fd;
-  try { fd = openSync(path, "r"); } catch { return null; }
+  try { fd = openSync(path, "r"); } catch (e) { readFailed(e, "opening the session log", path); return null; }
   try {
     const size = fstatSync(fd).size;
     if (from != null && from > size) return { reset: true };

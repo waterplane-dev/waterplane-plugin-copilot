@@ -23,6 +23,18 @@
         "scripts/twins.mjs",
         "--reading"
       ]
+    },
+    {
+      "key": "silentReads",
+      "name": "File-system failures that look like absence",
+      "means": "How many file-system calls on the Copilot store, the per-launch span files or the plugin's own files catch their failure without going through warn.mjs's one error policy (readFailed). Absence (ENOENT, ENOTDIR) is a silent answer; any other failure gives the same answer plus one rate-limited line in the daemon log. A catch that bypasses it turns permission denied or too many open files into the same answer as not there: an empty ledger, no conversations, a channel down, with nothing in the log saying why. Counts the daemon's modules only (hook/post.mjs runs inside Copilot's hook runner).",
+      "better": "lower",
+      "unit": "catches",
+      "run": [
+        "node",
+        "scripts/silent-reads.mjs",
+        "--reading"
+      ]
     }
   ]
 }

@@ -31,6 +31,7 @@ import { existsSync, statSync } from "node:fs";
 import { eventsPath, sessionDir, SESSION_ID_RE } from "./paths.mjs";
 import { follow } from "./jsonl.mjs";
 import { callFiles, resolvePath } from "./toolcalls.mjs";
+import { readFailed } from "./warn.mjs";
 
 const AGENT_STALE_MS = 600000;
 const LABEL_MAX = 120;
@@ -299,7 +300,8 @@ export function createTranscriptSource({ home, idOf, tail } = {}) {
       const id = idFor(ss);
       if (!id) return null;
       let m;
-      try { m = Math.floor(statSync(eventsPath(home, id)).mtimeMs); } catch { return null; }
+      const p = eventsPath(home, id);
+      try { m = Math.floor(statSync(p).mtimeMs); } catch (e) { readFailed(e, "statting the events log", p); return null; }
       const q = foldFor(id)?.fold.quietAt();
       return q != null && q > m ? q : m;
     },

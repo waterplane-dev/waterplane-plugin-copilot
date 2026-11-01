@@ -27,6 +27,7 @@ import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, hookAskRuleHit, RULE_LABEL } from "./dialogs.mjs";
 import { isShellTool } from "./toolcalls.mjs";
+import { setWarnSink } from "./warn.mjs";
 import { copilotHome } from "./paths.mjs";
 import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
@@ -305,6 +306,8 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
 export { doctorChecks as doctor } from "./setup.mjs";
 
 export function activate(api) {
+  // fs failures that are not absence reach the daemon log, once per site, path and code an hour (warn.mjs)
+  setWarnSink((m) => { try { api.log(m); } catch { /* the host's own */ } });
   const pluginDir = join(api.dataDir, "copilot-plugin");
   const otelDir = join(api.dataDir, "otel");
   let holdMs = holdMsOf(api.settings());

@@ -16,6 +16,7 @@
  * answers true when something was read, false when nothing was new, null when the file is absent.
  */
 import { statSync } from "node:fs";
+import { readFailed } from "./warn.mjs";
 
 /** At most this many 1 MiB windows per `advance()` (a 64 MiB backlog), then the next call goes on. */
 const MAX_WINDOWS = 64;
@@ -29,7 +30,7 @@ export function follow(tail, path, onLine, { filter, onReset, maxWindows = MAX_W
   const state = { path, size: 0, mtimeMs: 0, more: false };
   state.advance = () => {
     let st;
-    try { st = statSync(path); } catch { state.more = false; return null; }
+    try { st = statSync(path); } catch (e) { readFailed(e, "statting a tailed log", path); state.more = false; return null; }
     if (t && ((ino != null && st.ino !== ino) || st.size < t.offset())) { reset(); t.close(); t = null; }
     ino = st.ino;
     state.size = st.size;
@@ -43,7 +44,7 @@ export function follow(tail, path, onLine, { filter, onReset, maxWindows = MAX_W
       // replaced (or truncated) between the stat above and the follower's own open: what it just
       // read went into a fold of the old file — drop the fold and read the new file from 0, once
       let now = null;
-      try { now = statSync(path); } catch { /* gone: the next call says so */ }
+      try { now = statSync(path); } catch (e) { readFailed(e, "statting a tailed log", path); /* gone: the next call says so */ }
       if (!restarted && ((now && now.ino !== ino) || t.offset() < off)) {
         restarted = true;
         reset();

@@ -24,6 +24,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFailed } from "./warn.mjs";
 
 /** The 13 hook names `/env` listed on 1.0.91 (unchanged from 1.0.44). */
 export const HOOK_NAMES = Object.freeze([
@@ -94,7 +95,7 @@ export function hookKey(dir, { fresh = false } = {}) {
     try {
       const k = readFileSync(path, "utf8").trim();
       if (/^[0-9a-f]{64}$/.test(k)) { chmodSync(path, 0o600); return k; }
-    } catch { /* absent: made below */ }
+    } catch (e) { readFailed(e, "reading the hook key file", path); /* absent: made below */ }
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const k = randomBytes(32).toString("hex");
@@ -168,7 +169,7 @@ export const pluginJson = () => ({
 
 const writeIfChanged = (path, text) => {
   let old = null;
-  try { old = readFileSync(path, "utf8"); } catch { /* absent */ }
+  try { old = readFileSync(path, "utf8"); } catch (e) { readFailed(e, "reading the generated hook file", path); /* absent */ }
   if (old === text) return false;
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, text);
