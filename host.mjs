@@ -185,7 +185,9 @@ export function createLaunchModes({ file = null, now = Date.now } = {}) {
   const entry = (permissionMode, askRules, cid, at) => ({
     permissionMode: PERMISSION_MODES.includes(permissionMode) ? permissionMode : "default",
     askRules: Array.isArray(askRules) ? askRules.filter((r) => typeof r === "string") : [],
-    ...(typeof cid === "string" && SESSION_ID_RE.test(cid) && Number.isFinite(at) ? { cid: cid.toLowerCase(), at } : {}),
+    // `at` for every launch (a --continue one's spend counts from it too); `cid` only when known
+    ...(Number.isFinite(at) ? { at } : {}),
+    ...(typeof cid === "string" && SESSION_ID_RE.test(cid) && Number.isFinite(at) ? { cid: cid.toLowerCase() } : {}),
   });
   if (file) {
     let rows = null;
@@ -195,6 +197,7 @@ export function createLaunchModes({ file = null, now = Date.now } = {}) {
     } catch (e) { readFailed(e, "reading the launch modes", file); }
     const ok = rows && rows.every((r) => typeof r?.sid === "string" && r.sid && typeof r.permissionMode === "string"
       && Array.isArray(r.askRules) && r.askRules.every((s) => typeof s === "string") // a dropped rule is one hold fewer
+      && (r.at === undefined || Number.isFinite(r.at))
       && (r.cid === undefined || (typeof r.cid === "string" && SESSION_ID_RE.test(r.cid) && Number.isFinite(r.at))));
     if (rows && !ok) warn("launches-shape", `the launch modes ${file} are not in the expected shape; every launch in it is held as unknown`);
     if (ok) for (const r of rows.slice(-LAUNCHES_MAX)) byHost.set(r.sid, entry(r.permissionMode, r.askRules, r.cid, r.at));
@@ -222,6 +225,7 @@ export function createLaunchModes({ file = null, now = Date.now } = {}) {
     get: (sid) => byHost.get(sid) ?? null,
     /** Copilot id → the earliest recorded launch of it, or null. */
     launchedAt(cid) {
+      if (typeof cid !== "string" || !cid) return null; // a record without an id never matches
       let at = null;
       for (const l of byHost.values()) if (l.cid === cid && (at == null || l.at < at)) at = l.at;
       return at;
@@ -303,7 +307,9 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
   const idOf = (ss) => router.idOf(ss);
   const sessionLog = createSessionLog({ home, idOf, tail });
   router.setForkReader?.((ss) => sessionLog.forkOf(ss));
-  const ls = createLogSources(sessionLog);
+  // A session's spend counts from its launch: the recorded prepare() (kept across a daemon restart,
+  // where the host's spawnedAt is the moment the pane was picked back up), else spawnedAt.
+  const ls = createLogSources(sessionLog, { sinceOf: (ss) => launches?.get(ss?.id)?.at ?? ss?.spawnedAt });
   // ONE span reader for the ledger and the context gauge: one follower per span file, not two.
   otel ??= createOtelReader(otelDir, { tail, maxWindows: 1 });
   const ledger = createLedger({ home, otelDir, tail, otel, launchedAt: (id) => launches?.launchedAt?.(id) ?? null });

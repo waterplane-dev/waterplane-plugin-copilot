@@ -26,7 +26,9 @@ test("a launch noted before a restart is known after it (two instances over one 
     assert.equal(statSync(file).mode & 0o777, 0o600, "the person's launches, readable by them only");
     assert.deepEqual(readdirSync(d), ["launches.json"], "no tmp file left behind");
     const after = host.createLaunchModes({ file });
-    assert.deepEqual(after.get("wp-1"), { permissionMode: "bypassPermissions", askRules: ["Bash(git push*)"] });
+    const { at, ...mode } = after.get("wp-1");
+    assert.deepEqual(mode, { permissionMode: "bypassPermissions", askRules: ["Bash(git push*)"] });
+    assert.ok(Number.isFinite(at), "and when it was launched");
     assert.deepEqual(answer(after, "wp-1"), { behavior: "allow" });
     assert.equal(host.allowAllAnswer({ launches: after, slot: { hostId: "wp-1" }, payload: { toolName: "bash", toolInput: { command: "git push" } } }), null, "its ask rules came back too");
   } finally { rmSync(d, { recursive: true, force: true }); }

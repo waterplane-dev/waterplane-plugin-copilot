@@ -22,12 +22,15 @@
  *               `session.compaction_complete {success}`; preTok = currentTokens (the whole fill,
  *               Copilot's count), postTok absent (`postCompactionTokens` counts the conversation
  *               only, not the fill), auto=false only for trigger "manual".
- *   spend       `session.usage_checkpoint` (running session total, written after agentStop):
- *               tokens = Σ accountingSnapshot.tokenDetails, credits = totalNanoAiu / 1e9. Subagent
- *               calls are inside that total (measured to the token); their own
- *               `session.usage_record` lines carry a top-level `agentId`, so agentTok = Σ of those
- *               up to the checkpoint and tok = total − agentTok. Credits are not stated per
- *               subagent: native.amount is the session's whole total, agentAmount absent.
+ *   spend       `session.usage_checkpoint` (running total of the Copilot session, written after
+ *               agentStop; it carries across a resume, and a fork's file starts with copies of the
+ *               parent's at their own times — measured): tokens = Σ accountingSnapshot.tokenDetails,
+ *               credits = totalNanoAiu / 1e9. The HOST session's spend is the last checkpoint minus
+ *               the last one at or before its launch (`spendOf(f, since)`). Subagent calls are
+ *               inside that total (measured to the token); their own `session.usage_record` lines
+ *               carry a top-level `agentId`, so agentTok = Σ of those in the same window and
+ *               tok = Δtotal − agentTok. Credits are not stated per subagent: native.amount is the
+ *               whole delta, agentAmount absent. A total that went DOWN (never seen) gives no figure.
  *   agents      `subagent.started` / `subagent.completed` / `subagent.failed` (top-level agentId).
  *   plan        `tool.execution_start` of tool `exit_plan_mode` (posed; the plan file is
  *               `<session-state>/<id>/plan.md`), closed by that call's `tool.execution_complete`,
@@ -61,7 +64,7 @@ export function modeOf(name) {
 }
 
 export function emptyFold() {
-  return { mode: null, windows: new Map(), lastModel: null, compactions: [], pending: null, checkpoint: null,
+  return { mode: null, windows: new Map(), lastModel: null, compactions: [], pending: null, checkpoint: null, checkpoints: [],
     agentRecs: [], agents: new Map(), plan: null, planClosed: null, forkTo: null, forkedIn: false };
 }
 
@@ -141,7 +144,7 @@ export function applyEvent(f, e) {
         tok = parts.length && parts.every((v) => v != null) ? parts.reduce((a, b) => a + b, 0) : undefined;
       }
       const nano = num(d.totalNanoAiu);
-      if (at != null && (tok != null || nano != null)) f.checkpoint = { at, tok, credits: nano != null ? nano / 1e9 : undefined };
+      if (at != null && (tok != null || nano != null)) { f.checkpoint = { at, tok, credits: nano != null ? nano / 1e9 : undefined }; f.checkpoints.push(f.checkpoint); }
       break;
     }
     case "subagent.started":
@@ -175,17 +178,30 @@ export function applyEvent(f, e) {
   return f;
 }
 
-/** The fold's spend reading, or null when no checkpoint was written yet. */
-export function spendOf(f) {
+/**
+ * What the session launched at `since` (ms) has spent: the last checkpoint minus the last one
+ * written before `since` (measured: the totals carry across a resume, and a fork's file starts
+ * with the parent's checkpoints at their own times). Null when no checkpoint was written since
+ * (cannot say yet: a turn may be running). Without `since`, the running total.
+ */
+export function spendOf(f, since) {
   const cp = f.checkpoint;
   if (!cp) return null;
+  const from = Number.isFinite(since) ? since : -Infinity;
+  // a checkpoint stamped AT the launch is the earlier process's (a launch's first one follows a turn)
+  if (cp.at <= from) return null;
+  let base = null;
+  for (const c of f.checkpoints) if (c.at <= from) base = c; // file order: the copies, then this launch's
   const out = { at: cp.at };
-  const agentTok = f.agentRecs.filter((r) => r.at <= cp.at).reduce((a, r) => a + r.n, 0);
-  if (cp.tok != null) {
-    if (agentTok > 0 && agentTok <= cp.tok) { out.tok = cp.tok - agentTok; out.agentTok = agentTok; }
-    else if (agentTok === 0) out.tok = cp.tok;
+  const after = base ? base.at : -Infinity;
+  const agentTok = f.agentRecs.filter((r) => r.at > after && r.at <= cp.at).reduce((a, r) => a + r.n, 0);
+  const tok = cp.tok == null ? null : base ? (base.tok == null ? null : cp.tok - base.tok) : cp.tok;
+  if (tok != null && tok >= 0) {
+    if (agentTok > 0 && agentTok <= tok) { out.tok = tok - agentTok; out.agentTok = agentTok; }
+    else if (agentTok === 0) out.tok = tok;
   }
-  if (cp.credits != null) out.native = { amount: cp.credits, unit: "AI credits" };
+  const credits = cp.credits == null ? null : base ? (base.credits == null ? null : cp.credits - base.credits) : cp.credits;
+  if (credits != null && credits >= 0) out.native = { amount: credits, unit: "AI credits" };
   return out.tok != null || out.native ? out : null;
 }
 
@@ -225,7 +241,8 @@ export function createSessionLog({ home, idOf, tail }) {
 }
 
 /** The 2.2 sources over one session log. `caps` = the descriptor's caps (for the mode set). */
-export function createLogSources(log, { pollMs = 500 } = {}) {
+/** `sinceOf(ss)`: when the host session's launch ran (ms) — its spend counts from there. */
+export function createLogSources(log, { pollMs = 500, sinceOf = (ss) => ss?.spawnedAt } = {}) {
   const mode = {
     current(ss) { const f = log.fold(ss); return f ? modeOf(f.mode) : null; },
     async set(ss, target) {
@@ -246,7 +263,15 @@ export function createLogSources(log, { pollMs = 500 } = {}) {
     compactions(ss) { const f = log.fold(ss); return f ? f.compactions.map((c) => ({ ...c })) : null; },
     windowFor(ss, model) { const f = log.fold(ss); return f && model ? f.windows.get(model) : undefined; },
   };
-  const tokens = { session(ss) { const f = log.fold(ss); return f ? spendOf(f) : null; } };
+  const tokens = {
+    session(ss) {
+      const f = log.fold(ss);
+      if (!f) return null;
+      let since;
+      try { since = sinceOf(ss); } catch { since = undefined; }
+      return spendOf(f, since);
+    },
+  };
   const agents = {
     list(ss) {
       const f = log.fold(ss);
