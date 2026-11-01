@@ -79,7 +79,7 @@ test("allow-all: a request naming a sandbox, or a launch Copilot's log says is n
   assert.deepEqual(on.post({ command: "git status" }), { behavior: "allow" }, "the log's last word is on: answered");
 });
 
-test("allowAllAnswer: an unknown launch (a re-attach after a daemon restart) is held", () => {
+test("allowAllAnswer: a launch not known (never noted, no launches file) is held", () => {
   const launches = host.createLaunchModes();
   const payload = { toolName: "bash", toolInput: { command: "ls" } };
   assert.equal(host.allowAllAnswer({ launches, slot: { hostId: "wp-x" }, payload }), null);

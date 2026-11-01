@@ -17,7 +17,8 @@
  * Every number and literal here is measured on Copilot 1.0.91 or says it is not.
  */
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
 import { hookKey, hookTimeoutSec, parseHookPost, sealHookHandler, writePluginDir } from "./hooks.mjs";
@@ -27,7 +28,7 @@ import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, hookAskRuleHit, RULE_LABEL } from "./dialogs.mjs";
 import { isShellTool } from "./toolcalls.mjs";
-import { setWarnSink } from "./warn.mjs";
+import { readFailed, setWarnSink, warn } from "./warn.mjs";
 import { copilotHome } from "./paths.mjs";
 import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
@@ -169,21 +170,49 @@ export const LAUNCHES_MAX = 500;
 /**
  * Each launch's permission mode and ask rules, by HOST session id (`req.hostSessionId` at
  * `prepare`, `slot.hostId` at a hook — the one id both ends have, `--continue` included).
- * Memory only: a session re-attached after a daemon restart is not known here, so its permission
- * hooks are held as in the default mode (the safe direction).
+ *
+ * Kept in `file` (the plugin's data dir, `launches.json`) as well as memory: the daemon restarts
+ * while Copilot sessions keep running and are re-attached WITHOUT a new `prepare`. Memory only, a
+ * re-attached `--allow-all` session held every permission hook as a phone box again, stalling
+ * each unattended turn in the mode a person picked so that nothing asks. Without a file (or when
+ * it cannot be read: a broken or foreign one is ignored whole, never half-trusted) a launch not
+ * noted since this activation is unknown, and its hooks are held as in the default mode.
  */
-export function createLaunchModes() {
+export function createLaunchModes({ file = null } = {}) {
   const byHost = new Map();
+  const entry = (permissionMode, askRules) => ({
+    permissionMode: PERMISSION_MODES.includes(permissionMode) ? permissionMode : "default",
+    askRules: Array.isArray(askRules) ? askRules.filter((r) => typeof r === "string") : [],
+  });
+  if (file) {
+    let rows = null;
+    try {
+      const doc = JSON.parse(readFileSync(file, "utf8"));
+      rows = doc?.v === 1 && Array.isArray(doc.launches) ? doc.launches : [null];
+    } catch (e) { readFailed(e, "reading the launch modes", file); }
+    const ok = rows && rows.every((r) => typeof r?.sid === "string" && r.sid && typeof r.permissionMode === "string"
+      && Array.isArray(r.askRules) && r.askRules.every((s) => typeof s === "string")); // a dropped rule is one hold fewer
+    if (rows && !ok) warn("launches-shape", `the launch modes ${file} are not in the expected shape; every launch in it is held as unknown`);
+    if (ok) for (const r of rows.slice(-LAUNCHES_MAX)) byHost.set(r.sid, entry(r.permissionMode, r.askRules));
+  }
+  function save() {
+    if (!file) return;
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      const launches = [...byHost].map(([sid, l]) => ({ sid, ...l }));
+      writeFileSync(tmp, JSON.stringify({ v: 1, launches }) + "\n", { mode: 0o600 });
+      renameSync(tmp, file); // never a half-written file under the next activation
+    } catch (e) { readFailed(e, "writing the launch modes", file); }
+  }
   return {
     note(req) {
       const sid = typeof req?.hostSessionId === "string" ? req.hostSessionId : "";
       if (!sid) return;
       byHost.delete(sid);
-      byHost.set(sid, {
-        permissionMode: req?.launch?.permissionMode ?? "default",
-        askRules: Array.isArray(req?.askRules) ? req.askRules.filter((r) => typeof r === "string") : [],
-      });
+      byHost.set(sid, entry(req?.launch?.permissionMode ?? "default", req?.askRules));
       while (byHost.size > LAUNCHES_MAX) byHost.delete(byHost.keys().next().value);
+      save();
     },
     get: (sid) => byHost.get(sid) ?? null,
   };
@@ -357,7 +386,7 @@ export function activate(api) {
   let showStatus = () => {}; // set below, once the binary is resolved; settings re-say it
   // A fresh key per activation: the runner reads it at each hook and prints only answers sealed
   // with it, so a process squatting the sink's port while the daemon is down cannot approve.
-  const launches = createLaunchModes();
+  const launches = createLaunchModes({ file: join(api.dataDir, "launches.json") });
   const handler = sealHookHandler(makeHookHandler({ router, dialogs, attended, ruleAllows, launches, rulesSupported: rulesOn }), hookKey(pluginDir, { fresh: true }));
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {

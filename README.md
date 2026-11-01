@@ -159,8 +159,10 @@ during the hold (see below).
   matches them — `askrules.ts`'s `askRuleMatches`, mirrored in `dialogs.mjs`), so the host's answer
   gate (`askRulesVia: "gate"`) keeps it a person's tap; a request whose payload names a sandbox; a
   session whose `events.jsonl` last said `session.permissions_changed {allowAllPermissions: false}`;
-  and a session this daemon did not launch since its last start (a re-attach after a restart: the
-  mode is memory only). A Shift+Tab into autopilot does NOT start answering for a session launched
+  and a session whose launch the plugin has no record of. Each `prepare()` records its mode and
+  ask rules in the plugin's data dir (`launches.json`, the newest 500), so a session re-attached
+  after a daemon restart keeps answering as launched; a missing or broken file means "no record"
+  (held), never a half-read one. A Shift+Tab into autopilot does NOT start answering for a session launched
   without `--allow-all`: only the launch flag does.
 - **"Don't ask again" during the hold is a rule waterplane's answer gate keeps, and says so.**
   Copilot's hook output is allow / deny (+ message, interrupt) — nothing in it persists a rule, and
