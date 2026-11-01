@@ -142,16 +142,30 @@ test("H4: changing the hold re-says the status line with the new numbers", () =>
   assert.match(api._calls.setStatus.at(-1).text, /time out at 17 s, the phone holds 15 s/);
 });
 
-test("R5: a session launched before the key file (no key-file arg) still gets the phone's answer printed", async () => {
+// A session launched before the key file (10-29) keeps a hooks.json with no key-file arg, and runs
+// the CURRENT post.mjs. It used to print the daemon's answer bare: any local process holding the
+// sink's port could answer its permission requests (H1). Now nothing unsigned is printed — it
+// fails safe to Copilot's own terminal dialog — and the daemon never asks the phone for it.
+test("P5: a session launched before the key file prints nothing, even a bare answer, and no box is raised for its hook", async () => {
   const dir = pluginDir();
-  let seen = null;
-  const sink = await startSink((b) => { seen = b; return sealHookHandler(() => ({ behavior: "allow" }), hookKey(dir))(b); });
+  let seen = null, asked = 0;
+  const sink = await startSink((b) => { seen = b; return sealHookHandler(() => { asked++; return { behavior: "allow" }; }, hookKey(dir))(b); });
+  const squatter = await startSink(() => ({ behavior: "allow" }));
   try {
-    const cmd = hookCommand({ node: process.execPath, hook: "permissionRequest", sink: sink.url, waitMs: 8000 });
-    const r = await runHook(cmd, sample("permissionRequest"));
-    assert.deepEqual(JSON.parse(r.out), { behavior: "allow" });
+    const r = await runHook(hookCommand({ node: process.execPath, hook: "permissionRequest", sink: sink.url, waitMs: 8000 }), sample("permissionRequest"));
+    assert.equal(r.out, "", "no answer from the daemon");
     assert.equal(seen.keyed, false);
-  } finally { await sink.close(); }
+    assert.equal(asked, 0, "no phone box for an answer that cannot land");
+    const s = await runHook(hookCommand({ node: process.execPath, hook: "permissionRequest", sink: squatter.url, waitMs: 8000 }), sample("permissionRequest"));
+    assert.equal(s.out, "", "nor from a process squatting the port");
+  } finally { await sink.close(); await squatter.close(); }
+});
+
+test("P5: an old session's turn hooks still reach the handler (only the answer is withheld)", () => {
+  let got = 0;
+  const h = sealHookHandler(() => { got++; return {}; }, "k");
+  assert.deepEqual(h({ hook: "agentStop", payload: {}, challenge: "c", keyed: false }), {});
+  assert.equal(got, 1);
 });
 
 test("R5: a keyed runner prints nothing for an unsigned or forged answer, even one sent bare as if to a legacy runner", async () => {
@@ -181,9 +195,9 @@ test("R5: a keyed runner that cannot read its key file posts keyOk: false; the d
     assert.equal(seen.keyed, true);
     assert.equal(seen.keyOk, false);
     assert.equal(asked, 0, "the phone is never asked (or told it answered)");
-    // the daemon's side alone: keyed false ⇒ bare; keyed true ⇒ sealed
+    // the daemon's side alone: keyed false ⇒ nothing (never bare); keyed true ⇒ sealed
     const h = sealHookHandler(() => ({ behavior: "deny" }), hookKey(dir));
-    assert.deepEqual(h({ hook: "permissionRequest", challenge: "c", keyed: false }), { behavior: "deny" });
+    assert.deepEqual(h({ hook: "permissionRequest", challenge: "c", keyed: false }), {});
     assert.equal(typeof h({ hook: "permissionRequest", challenge: "c", keyed: true, keyOk: true }).proof, "string");
   } finally { await sink.close(); }
 });

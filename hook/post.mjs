@@ -13,8 +13,10 @@
  *
  * `keyed` says whether this command line names a key file. A session launched
  * before the key existed keeps its old hooks.json (no key-file arg) but runs
- * this same script: the daemon answers it bare and it prints that, unproven —
- * the trust those launches had before. A key file that is named but unreadable
+ * this same script: it prints NOTHING (it used to print a bare answer, which any
+ * process holding the sink's port could forge), so such a session gets Copilot's
+ * own dialog (the phone answers THAT by keys; no box is raised for the hook
+ * itself, whose answer could not land). A key file that is named but unreadable
  * is reported (`keyOk: false`): the daemon then answers nothing at once (the
  * phone is not told it answered) and nothing is printed — never a bare answer.
  *
@@ -79,8 +81,8 @@ async function main() {
   let body;
   try { body = await res.json(); } catch { return; }
   if (!body || typeof body !== "object") return;
-  if (!keyed) { const out = shape(typeof body.proof === "string" ? body.answer : body); return out ? JSON.stringify(out) : undefined; }
-  if (typeof body.proof !== "string" || !key) return;
+  // no key file named (a hooks.json from before 10-29): nothing can be proven, nothing is printed
+  if (!keyed || typeof body.proof !== "string" || !key) return;
   const want = createHmac("sha256", key).update(`${challenge}\n${JSON.stringify(body.answer)}`).digest();
   let got;
   try { got = Buffer.from(body.proof, "hex"); } catch { return; }

@@ -111,9 +111,11 @@ export const hookProof = (key, challenge, answerJson) =>
 
 /**
  * Wrap an `onHook` handler:
- * - seal: a non-empty answer goes back as `{answer, proof}` over the post's `challenge` (bare to
- *   a runner whose command line names no key file: `keyed: false`; none at all, without asking
- *   the handler, when it names one it cannot read: `keyOk: false`);
+ * - seal: a non-empty answer goes back as `{answer, proof}` over the post's `challenge`. A runner
+ *   whose command line names no key file (`keyed: false`, a session from before 10-29) gets no
+ *   answer, and its permissionRequest is declined without asking the handler (Copilot then shows
+ *   its own dialog, which the phone answers by keys); one naming a key it cannot read
+ *   (`keyOk: false`) gets none either, again without asking the handler;
  * - cap the hold at the wait of THIS post's runner (`wait`, minus a margin): a session launched
  *   before holdMs was raised keeps its old, shorter hook timeout, and an answer past its runner's
  *   wait would settle a hook nobody reads (and tell the phone it worked). The capped hold's
@@ -124,12 +126,17 @@ export function sealHookHandler(fn, key) {
     // the runner names a key file it cannot read: it would print nothing, so no answer can land —
     // decline at once rather than ask the phone and report a tap that never reached Copilot
     if (body?.keyed === true && body.keyOk === false) return {};
+    // a session launched before the key file (10-29): its runner prints nothing unproven, so a
+    // permission box could never land — not asked; its other hooks still reach the handler
+    if (body?.keyed === false && body.hook === "permissionRequest") return {};
     const challenge = typeof body?.challenge === "string" ? body.challenge : "";
     const seal = (a) => {
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).length === 0) return {};
-      // a runner from before the proof, or a command line from before the key file (`keyed: false`,
-      // a session launched before this update): it prints what it gets, as it did then
-      if (!challenge || !key || body.keyed === false) return a;
+      // a runner with no key file prints nothing unproven: nothing is sent to it
+      if (body.keyed === false) return {};
+      // no challenge or key (a caller that is not the runner, e.g. a test): bare — the keyed
+      // runner prints only a proven answer, so this never reaches Copilot
+      if (!challenge || !key) return a;
       const answer = JSON.stringify(a);
       return { answer: a, proof: hookProof(key, challenge, answer) };
     };
