@@ -63,7 +63,7 @@ export function noteHook(router, slot, hook) {
 
 export function createAttach(router, { home, pollMs = LOCK_POLL_MS, alive } = {}) {
   return async function attach(ss, onHealth) {
-    const slot = router.slotFor(ss);
+    const { slot, drop } = router.hold(ss);
     slot.healths.add(onHealth);
     // An unbound (`--continue`) slot also asks the host's binding ladder again each tick: its
     // prompt rung adopts only on a LATER pass than the one that first saw the match (slots.mjs).
@@ -71,14 +71,14 @@ export function createAttach(router, { home, pollMs = LOCK_POLL_MS, alive } = {}
       if (!slot.id) { try { router.rebind?.(); } catch { /* next tick */ } }
       pollLock(router, slot, typeof home === "function" ? home() : home, alive);
     };
-    tick();
+    try { tick(); } catch (e) { slot.healths.delete(onHealth); drop(); throw e; }
     const timer = setInterval(tick, pollMs);
     timer.unref?.();
     return {
       async close() {
         clearInterval(timer);
         slot.healths.delete(onHealth);
-        if (!slot.healths.size) router.release(slot);
+        drop();
       },
       health: () => slot.health,
     };

@@ -47,9 +47,9 @@ export function emitTurn(slot, e) {
 export function createTurnSource(router) {
   return {
     watch(ss, on) {
-      const slot = router.slotFor(ss);
+      const { slot, drop } = router.hold(ss);
       slot.turns.add(on);
-      return () => { slot.turns.delete(on); };
+      return () => { slot.turns.delete(on); drop(); };
     },
   };
 }

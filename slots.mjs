@@ -61,7 +61,10 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   /** Host session id → the fork id a RELEASED slot had followed (`idOf` after close keeps reading the fork). */
   const goneForks = new Map();
 
-  /** The slot for one host session, created on first ask. */
+  /**
+   * The slot for one host session, created on first ask. Sources do not call this: they `hold`
+   * (a watcher) or `peek` (a read). Kept for tests and for `hold` itself.
+   */
   function slotFor(ss) {
     let s = byHost.get(ss.id);
     if (s) return s;
@@ -78,6 +81,24 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
     }
     byHost.set(ss.id, s);
     return s;
+  }
+
+  /**
+   * A watcher's claim on its session's slot — the ONE way a source creates a slot. The slot lives
+   * while any claim is open (channel attach, turns, dialogs, questions) and is released when the
+   * last is dropped, whichever source that is; a read never creates one (`peek`). `drop` is
+   * idempotent. Returns `{ slot, drop }`.
+   */
+  function hold(ss) {
+    const slot = slotFor(ss);
+    slot.holds = (slot.holds ?? 0) + 1;
+    let open = true;
+    const drop = () => {
+      if (!open) return;
+      open = false;
+      if (--slot.holds <= 0) release(slot);
+    };
+    return { slot, drop };
   }
 
   function release(slot) {
@@ -218,5 +239,5 @@ export function createSlots({ bind = null, now = Date.now } = {}) {
   /** Is this Copilot session id routed to a live slot here? Case-insensitive, like every insert. */
   const has = (id) => typeof id === "string" && byId.has(id.toLowerCase());
 
-  return { slotFor, peek, idOf, setForkReader, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
+  return { slotFor, hold, peek, idOf, setForkReader, has, release, route, rebind, noteSent, setHealth, _byId: byId, _unbound: unbound, _strays: strays };
 }

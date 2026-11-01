@@ -856,14 +856,14 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
 
   const questions = {
     watch(ss, on) {
-      const slot = router.slotFor(ss);
+      const { slot, drop } = router.hold(ss);
       (slot.questions ??= new Set()).add(on);
       const stop = poll(slot);
-      return () => { slot.questions.delete(on); stop(); };
+      return () => { slot.questions.delete(on); stop(); drop(); };
     },
     async pending(ss) {
-      const slot = router.slotFor(ss);
-      if (slot.health.state !== "up") return null;
+      const slot = router.peek(ss?.id);
+      if (!slot || slot.health.state !== "up") return null; // no slot: nobody watches it — cannot say
       try { readTail(slot); } catch { return null; }
       return [...st(slot).questions.values()].map((r) => r.question);
     },
@@ -871,18 +871,18 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
 
   const source = {
     watch(ss, on) {
-      const slot = router.slotFor(ss);
+      const { slot, drop } = router.hold(ss);
       slot.dialogs.add(on);
       const s = st(slot);
       if (s.asks.size) { try { on.unposed?.(s.asks.size); } catch { /* the host's fault */ } }
       if (s.trust) { try { on.asked(s.trust.dialog); } catch { /* the host's fault */ } }
       const stop = poll(slot);
       try { checkTrust(slot); } catch { /* next tick */ }
-      return () => { slot.dialogs.delete(on); stop(); };
+      return () => { slot.dialogs.delete(on); stop(); drop(); };
     },
     async pending(ss) {
-      const slot = router.slotFor(ss);
-      if (slot.health.state !== "up") return null;
+      const slot = router.peek(ss?.id);
+      if (!slot || slot.health.state !== "up") return null; // no slot: nobody watches it — cannot say
       try { readTail(slot); } catch { return null; }
       try { checkTrust(slot); } catch { /* the screen cannot say: what is up stays */ }
       const trust = st(slot).trust;
