@@ -25,6 +25,20 @@ export const eventsPath = (home, id) => join(sessionDir(home, id), "events.jsonl
 /** A Copilot session id is a uuid (minted by us, or by the CLI). Anything else is refused, never a path. */
 export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * `(ss) => id | null`: the Copilot session id a source reads for a host session — `idOf` (the
+ * router's, which follows a /fork and a --continue binding) else the record's own
+ * `backendSessionId`, validated and lower-cased (the dir names Copilot writes). Every source
+ * resolves through this one function.
+ */
+export function copilotIdResolver(idOf) {
+  return (ss) => {
+    let id;
+    try { id = (idOf ? idOf(ss) : ss?.backendSessionId) || ss?.backendSessionId; } catch { id = undefined; }
+    return typeof id === "string" && SESSION_ID_RE.test(id) ? id.toLowerCase() : null;
+  };
+}
+
 const pidAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; }
 };

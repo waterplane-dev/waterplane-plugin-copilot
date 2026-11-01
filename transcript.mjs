@@ -28,7 +28,7 @@
  * `read` keeps a cursor per file and parses only appended bytes.
  */
 import { existsSync, statSync } from "node:fs";
-import { eventsPath, sessionDir, SESSION_ID_RE } from "./paths.mjs";
+import { copilotIdResolver, eventsPath, sessionDir } from "./paths.mjs";
 import { follow } from "./jsonl.mjs";
 import { callFiles, resolvePath } from "./toolcalls.mjs";
 import { readFailed } from "./warn.mjs";
@@ -264,14 +264,6 @@ export function foldEvents({ now = Date.now } = {}) {
 
 const MAX_CACHED = 8;
 
-function resolver(home, idOf) {
-  return (ss) => {
-    let id;
-    try { id = (idOf ? idOf(ss) : ss?.backendSessionId) || ss?.backendSessionId; } catch { id = undefined; }
-    return typeof id === "string" && SESSION_ID_RE.test(id) ? id.toLowerCase() : null;
-  };
-}
-
 /** One cached fold + cursor per session file. */
 function createFolds(home, tail) {
   const folds = new Map(); // id → { fold, tail }
@@ -292,7 +284,7 @@ function createFolds(home, tail) {
 }
 
 export function createTranscriptSource({ home, idOf, tail } = {}) {
-  const idFor = resolver(home, idOf);
+  const idFor = copilotIdResolver(idOf);
   const foldFor = createFolds(home, tail);
   return {
     /** mtime of events.jsonl — or the later moment the quiet rule flipped a running agent — or null. */
@@ -319,7 +311,7 @@ export function createTranscriptSource({ home, idOf, tail } = {}) {
 }
 
 export function createDeliverySource({ home, idOf, tail, pollMs = 100, onSend = null } = {}) {
-  const idFor = resolver(home, idOf);
+  const idFor = copilotIdResolver(idOf);
   const foldFor = createFolds(home, tail);
   const turnsSince = (id, since) => {
     const f = foldFor(id);

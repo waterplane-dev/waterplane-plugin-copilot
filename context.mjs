@@ -23,7 +23,7 @@
  * readable ⇒ null, never a 0.
  */
 import { createOtelReader } from "./otel.mjs";
-import { eventsPath, SESSION_ID_RE } from "./paths.mjs";
+import { copilotIdResolver, eventsPath } from "./paths.mjs";
 import { follow } from "./jsonl.mjs";
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
@@ -68,11 +68,7 @@ export function createContextSource({ otelDir, home, idOf, tail } = {}) {
     return c;
   }
 
-  const idFor = (ss) => {
-    let id;
-    try { id = (idOf ? idOf(ss) : ss?.backendSessionId) || ss?.backendSessionId; } catch { id = undefined; }
-    return typeof id === "string" && SESSION_ID_RE.test(id) ? id.toLowerCase() : null;
-  };
+  const idFor = copilotIdResolver(idOf);
 
   return {
     sample(ss) {

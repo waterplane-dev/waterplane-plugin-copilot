@@ -40,7 +40,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { follow } from "./jsonl.mjs";
-import { eventsPath, SESSION_ID_RE } from "./paths.mjs";
+import { copilotIdResolver, eventsPath, SESSION_ID_RE } from "./paths.mjs";
 import { readFailed } from "./warn.mjs";
 
 const WANT = ["session.info", "session.mode_changed", "session.start", "session.resume", "session.shutdown", "\"agentMode\"", "session.compaction_", "session.usage_record", "session.usage_checkpoint",
@@ -196,11 +196,7 @@ export function spendOf(f) {
 export function createSessionLog({ home, idOf, tail }) {
   const homeDir = () => (typeof home === "function" ? home() : home);
   const folds = new Map();
-  const idFor = (ss) => {
-    let id;
-    try { id = (idOf ? idOf(ss) : ss?.backendSessionId) || ss?.backendSessionId; } catch { id = undefined; }
-    return typeof id === "string" && SESSION_ID_RE.test(id) ? id.toLowerCase() : null;
-  };
+  const idFor = copilotIdResolver(idOf);
   function fold(ss) {
     const id = idFor(ss);
     const h = homeDir();
