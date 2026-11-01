@@ -20,7 +20,7 @@
  * launch (the sink's port is the daemon's, and may change between runs), and
  * rewritten only when its bytes change.
  */
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,9 +105,16 @@ export function hookKey(dir, { fresh = false } = {}) {
   return k;
 }
 
-/** The proof the runner checks (hook/post.mjs computes the same). */
-export const hookProof = (key, challenge, answerJson) =>
-  createHmac("sha256", key).update(`${challenge}\n${answerJson}`).digest("hex");
+/**
+ * The proof the runner checks (hook/post.mjs computes the same): over the runner's challenge AND
+ * the hook and payload the answer is for. Over the challenge alone, a relay on the sink's old port
+ * could swap the request, get the daemon's allow for the harmless one it forwarded, and hand the
+ * runner a valid proof for the request Copilot actually asked.
+ */
+export const hookProof = (key, challenge, answerJson, hook = "", payloadJson = "null") =>
+  createHmac("sha256", key)
+    .update(`${challenge}\n${hook}\n${createHash("sha256").update(payloadJson).digest("hex")}\n${answerJson}`)
+    .digest("hex");
 
 /**
  * Wrap an `onHook` handler:
@@ -130,6 +137,9 @@ export function sealHookHandler(fn, key) {
     // permission box could never land — not asked; its other hooks still reach the handler
     if (body?.keyed === false && body.hook === "permissionRequest") return {};
     const challenge = typeof body?.challenge === "string" ? body.challenge : "";
+    // what the runner will check the proof against, read before the handler sees the body
+    const hook = typeof body?.hook === "string" ? body.hook : "";
+    const payloadJson = JSON.stringify(body?.payload ?? null);
     const seal = (a) => {
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).length === 0) return {};
       // a runner with no key file prints nothing unproven: nothing is sent to it
@@ -138,7 +148,7 @@ export function sealHookHandler(fn, key) {
       // runner prints only a proven answer, so this never reaches Copilot
       if (!challenge || !key) return a;
       const answer = JSON.stringify(a);
-      return { answer: a, proof: hookProof(key, challenge, answer) };
+      return { answer: a, proof: hookProof(key, challenge, answer, hook, payloadJson) };
     };
     const wait = Number(body?.wait);
     const capMs = hold && Number.isFinite(wait) && wait > 0 ? Math.max(0, wait - HOLD_MARGIN_MS) : Infinity;

@@ -49,8 +49,8 @@ test("H1: a proof made with another key, or replayed from another challenge, is 
   const sink = await startSink((b) => {
     // A replay: the proof the REAL key made for the previous post's challenge.
     const answer = { behavior: "allow" };
-    const out = last ? { answer, proof: last } : { answer, proof: hookProof(other, b.challenge, JSON.stringify(answer)) };
-    last = hookProof(hookKey(dir), b.challenge, JSON.stringify(answer));
+    const out = last ? { answer, proof: last } : { answer, proof: hookProof(other, b.challenge, JSON.stringify(answer), b.hook, JSON.stringify(b.payload)) };
+    last = hookProof(hookKey(dir), b.challenge, JSON.stringify(answer), b.hook, JSON.stringify(b.payload));
     return out;
   });
   try {
@@ -200,4 +200,29 @@ test("R5: a keyed runner that cannot read its key file posts keyOk: false; the d
     assert.deepEqual(h({ hook: "permissionRequest", challenge: "c", keyed: false }), {});
     assert.equal(typeof h({ hook: "permissionRequest", challenge: "c", keyed: true, keyOk: true }).proof, "string");
   } finally { await sink.close(); }
+});
+
+// A relay on the sink's OLD port (the daemon restarted elsewhere; running sessions still post
+// there) used to rewrite the question and forward it with the runner's own challenge: the daemon
+// allowed the harmless request it saw and signed that allow over the runner's challenge, and the
+// runner printed it for the request Copilot actually asked. The proof now covers the hook name and
+// the payload the daemon answered.
+test("a relay that swaps the request gets a proof the runner refuses", async () => {
+  const dir = pluginDir();
+  const key = hookKey(dir);
+  const daemon = sealHookHandler((b) => (b.payload?.toolInput?.command === "ls" ? { behavior: "allow" } : {}), key);
+  const relay = await startSink((b) => daemon({ ...b, payload: { ...b.payload, toolInput: { command: "ls" } } }));
+  const honest = await startSink((b) => daemon(b));
+  const asHook = await startSink((b) => daemon({ ...b, hook: "preToolUse" }));
+  try {
+    writePluginDir(dir, { node: process.execPath, sink: relay.url, holdMs: 8000 });
+    const ask = { ...JSON.parse(sample("permissionRequest")), toolName: "bash", toolInput: { command: "rm -rf ~/x" } };
+    assert.equal((await runHook(hooksOf(dir).permissionRequest[0].bash, JSON.stringify(ask))).out, "", "the swapped allow is not printed");
+    writePluginDir(dir, { node: process.execPath, sink: honest.url, holdMs: 8000 });
+    const ls = JSON.stringify({ ...ask, toolInput: { command: "ls" } });
+    assert.deepEqual(JSON.parse((await runHook(hooksOf(dir).permissionRequest[0].bash, ls)).out), { behavior: "allow" }, "the real request's allow still lands");
+    // another hook name over the same challenge and payload: refused too
+    writePluginDir(dir, { node: process.execPath, sink: asHook.url, holdMs: 8000 });
+    assert.equal((await runHook(hooksOf(dir).permissionRequest[0].bash, ls)).out, "");
+  } finally { await relay.close(); await honest.close(); await asHook.close(); }
 });

@@ -4,8 +4,8 @@
  *
  * Reads the payload Copilot writes on stdin, POSTs `{hook, payload, challenge,
  * wait}` to the daemon's loopback sink, and prints the sink's answer — only
- * when it is `{answer, proof}` with `proof` = HMAC-SHA256(key, challenge \n
- * JSON(answer)), and only the shape Copilot takes for that hook (a
+ * when it is `{answer, proof}` with `proof` = HMAC-SHA256(key, challenge \n hook
+ * \n sha256(JSON(payload)) \n JSON(answer)), and only the shape Copilot takes for that hook (a
  * permissionRequest's `behavior` allow|deny + `message`; the other hooks print
  * nothing). The sink has no auth, and while the daemon is down any local
  * process may hold its port: without the key it cannot answer for the daemon.
@@ -26,7 +26,7 @@
  * stdin that never ends ⇒ nothing printed, exit 0. Node only — no curl, no
  * shell tools.
  */
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const [hook, sink, waitArg, keyFile] = process.argv.slice(2);
@@ -83,7 +83,10 @@ async function main() {
   if (!body || typeof body !== "object") return;
   // no key file named (a hooks.json from before 10-29): nothing can be proven, nothing is printed
   if (!keyed || typeof body.proof !== "string" || !key) return;
-  const want = createHmac("sha256", key).update(`${challenge}\n${JSON.stringify(body.answer)}`).digest();
+  // the proof covers what the daemon answered: this hook, this payload, this answer (a relay on an
+  // old port must not get an allow for a request it swapped, signed over this runner's challenge)
+  const asked = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  const want = createHmac("sha256", key).update(`${challenge}\n${hook}\n${asked}\n${JSON.stringify(body.answer)}`).digest();
   let got;
   try { got = Buffer.from(body.proof, "hex"); } catch { return; }
   if (got.length !== want.length || !timingSafeEqual(got, want)) return;
