@@ -96,3 +96,54 @@ test("askRuleMatches mirrors the host gate's matcher", () => {
   assert.equal(hookAskRuleHit(RULES, { toolName: "bash", toolInput: { command: "git status" } }), null);
   assert.equal(hookAskRuleHit(["Edit(*.env*)"], { toolName: "edit", toolInput: { file_path: "/r/.env.local" } }), "Edit(*.env*)");
 });
+
+// The words an ask rule is matched against under --allow-all must be the words the host's gate
+// matches on the published box (its question, then each option label: usmc answergate.ts), or a
+// rule a person wrote off the box is skipped exactly when allow-all answers without asking.
+const PAYLOADS = [
+  ["bash", { command: "git status --short --branch", description: "Show status" }],
+  ["edit", { file_path: "/tmp/wp0-copilot/repo/a.txt", diff: "+x\n-y" }],
+  ["web_fetch", { url: "https://example.com/docs" }],
+  ["web_fetch", { url: "https://example.com/" + "p".repeat(500) + "/tail-word" }],
+];
+
+test("allow-all matches ask rules on the very words the default-mode box shows (every three-word run of question + labels)", async () => {
+  for (const [toolName, toolInput] of PAYLOADS) {
+    const { asked, post } = await launched(undefined);
+    post(toolInput, toolName);
+    for (let i = 0; i < 40 && !asked.length; i++) await settleSoon();
+    assert.equal(asked.length, 1, `${toolName}: a box`);
+    const gate = `${asked[0].question}\n${asked[0].options.map((o) => o.label).join("\n")}`;
+    const words = gate.split(/\s+/).filter(Boolean);
+    for (let i = 0; i + 3 <= words.length; i++) {
+      const rule = `Tool(${words.slice(i, i + 3).join(" ").replace(/[()]/g, "")})`;
+      if (!askRuleMatches(rule, gate)) continue; // a run the rule syntax cannot express
+      assert.equal(hookAskRuleHit([rule], { toolName, toolInput }), rule, `${toolName}: ${rule} matches the box, so allow-all must hold it`);
+    }
+  }
+});
+
+test("allow-all + a tool an ask rule names by the box's words (\"use web_fetch\"): held, not answered", async () => {
+  const { post } = await launched("bypassPermissions", { askRules: ["WebFetch(use web_fetch)"] });
+  assert.ok(post({ url: "https://example.com" }, "web_fetch") instanceof Promise, "held for a person's tap");
+});
+
+test("allow-all matches on the box that names the call's intention too (the tool call on disk first)", async () => {
+  const ID2 = "2dd08105-5de0-4902-9e93-8d55349bf8e7";
+  const call = { type: "tool.execution_start", id: "e1", timestamp: "2026-10-31T10:26:17.000Z", data: { toolCallId: "call_S", toolName: "bash", arguments: { command: "git status --short --branch", description: "Show status" } } };
+  const { asked, post } = await launched(undefined, { events: [call] });
+  const toolInput = { command: "git status --short --branch", description: "Show status" };
+  post(toolInput);
+  for (let i = 0; i < 40 && !asked.length; i++) await settleSoon();
+  assert.match(asked[0].question, /\nShow status$/, "the box names the intention");
+  const gate = `${asked[0].question}\n${asked[0].options.map((o) => o.label).join("\n")}`;
+  const words = gate.split(/\s+/).filter(Boolean);
+  let checked = 0;
+  for (let i = 0; i + 3 <= words.length; i++) {
+    const rule = `Tool(${words.slice(i, i + 3).join(" ").replace(/[()]/g, "")})`;
+    if (!askRuleMatches(rule, gate)) continue;
+    checked++;
+    assert.equal(hookAskRuleHit([rule], { toolName: "bash", toolInput }), rule, rule);
+  }
+  assert.ok(checked > 5 && ID2);
+});

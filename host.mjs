@@ -198,18 +198,18 @@ export function createLaunchModes() {
  * request matches an ask rule the launch carried — those stay a person's tap, through the box and
  * the host's answer gate (`askRulesVia: "gate"`).
  */
-export function allowAllAnswer({ launches, dialogs, slot, payload }) {
+export function allowAllAnswer({ launches, dialogs, slot, payload, rulesSupported = true }) {
   const l = launches?.get(slot?.hostId);
   if (!l || l.permissionMode !== "bypassPermissions") return null;
   if (typeof payload?.toolName !== "string" || !payload.toolName.trim()) return null;
   if (/sandbox/i.test(JSON.stringify(payload))) return null;
-  if (hookAskRuleHit(l.askRules, payload)) return null;
+  if (hookAskRuleHit(l.askRules, payload, { rulesSupported })) return null;
   if (dialogs?.allowAllOff?.(slot)) return null;
   return { behavior: "allow" };
 }
 
 /** The `onHook` handler. Exported for tests. */
-export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, ruleAllows = null, launches = null }) {
+export function makeHookHandler({ router, dialogs, now = Date.now, attended = () => true, ruleAllows = null, launches = null, rulesSupported = true }) {
   return (body, hold) => {
     const msg = parseHookPost(body);
     if (!msg) return {};
@@ -231,7 +231,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
       const byRule = ruleAllows?.(slot, msg.payload);
       if (byRule) return byRule;
       // Launched `--allow-all`: answered at once unless an ask rule (or a sandbox) needs a person.
-      const byMode = allowAllAnswer({ launches, dialogs, slot, payload: msg.payload });
+      const byMode = allowAllAnswer({ launches, dialogs, slot, payload: msg.payload, rulesSupported });
       if (byMode) return byMode;
       // Nobody can answer it from the phone (no phone on the session, the gate off): do not make the
       // desk wait out the hold for nothing. Copilot's own dialog shows at once; a phone that attaches
@@ -348,7 +348,7 @@ export function activate(api) {
   // A fresh key per activation: the runner reads it at each hook and prints only answers sealed
   // with it, so a process squatting the sink's port while the daemon is down cannot approve.
   const launches = createLaunchModes();
-  const handler = sealHookHandler(makeHookHandler({ router, dialogs, attended, ruleAllows, launches }), hookKey(pluginDir, { fresh: true }));
+  const handler = sealHookHandler(makeHookHandler({ router, dialogs, attended, ruleAllows, launches, rulesSupported: rulesOn }), hookKey(pluginDir, { fresh: true }));
   api.onHook(handler, { maxHoldMs: holdMs });
   api.onSettings((v) => {
     holdMs = holdMsOf(v);

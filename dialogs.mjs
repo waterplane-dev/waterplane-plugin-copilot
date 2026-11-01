@@ -343,17 +343,30 @@ export function askRuleMatches(rule, text) {
 }
 
 /**
- * The ask rule a `permissionRequest` hook payload names, or null: over the words its box would show
- * (the shell question and command line; a tool's name, its file and its whole input).
+ * The words the host's answer gate would match an ask rule on, for the box this hook would publish
+ * (usmc `answergate.ts`: the question, then each option label) — built by the SAME `questionOf` and
+ * option lists the box is built from, so the two cannot drift. A shell box names the call's intention
+ * only when the tool call is on disk by then, so both boxes are given. The hook's whole input follows,
+ * unclipped (the box clips it): matching more holds for a person's tap, the safe direction.
  */
-export function hookAskRuleHit(rules, payload) {
-  if (!Array.isArray(rules) || !rules.length) return null;
+export function hookBoxWords(payload, { rulesSupported = true } = {}) {
   const toolName = str(payload?.toolName) ?? "";
   const input = payload?.toolInput && typeof payload.toolInput === "object" ? payload.toolInput : null;
-  const text = SHELL_TOOLS.has(toolName)
-    ? ["Do you want to run this command?", str(input?.command) ?? ""].join("\n")
-    : [`Copilot asks permission to ${toolName} ${pathOf(input) ?? ""}`, input ? JSON.stringify(input) : ""].join("\n");
-  return rules.find((r) => typeof r === "string" && askRuleMatches(r, text)) ?? null;
+  const shell = SHELL_TOOLS.has(toolName);
+  const command = shell ? str(input?.command) ?? "" : null;
+  const r = { shell, toolName, command, toolInput: shell ? null : input, intention: null, phase: "hook", prompt: null };
+  const labels = (shell ? shellOptions(identOf(command, null), "hook", { command, rulesSupported }) : TOOL_OPTIONS).map((o) => o.label);
+  const boxes = [[questionOf(r), ...labels]];
+  const intention = shell ? str(input?.description) : null;
+  if (intention) boxes.push([questionOf({ ...r, intention }), ...labels]);
+  return boxes.map((b) => b.join("\n")).concat(input ? [JSON.stringify(input)] : []);
+}
+
+/** The ask rule a `permissionRequest` hook payload names, or null: over any of its `hookBoxWords`. */
+export function hookAskRuleHit(rules, payload, { rulesSupported = true } = {}) {
+  if (!Array.isArray(rules) || !rules.length) return null;
+  const texts = hookBoxWords(payload, { rulesSupported });
+  return rules.find((r) => typeof r === "string" && texts.some((t) => askRuleMatches(r, t))) ?? null;
 }
 
 /** The file a non-shell hook input is about (`edit {file_path}` measured; `path` / `fileName` tolerated). */
