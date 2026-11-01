@@ -29,7 +29,7 @@ import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, hookAskRuleHit, RULE_LABEL } from "./dialogs.mjs";
 import { isShellTool } from "./toolcalls.mjs";
 import { readFailed, setWarnSink, warn } from "./warn.mjs";
-import { copilotHome } from "./paths.mjs";
+import { copilotHome, SESSION_ID_RE } from "./paths.mjs";
 import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
@@ -178,11 +178,14 @@ export const LAUNCHES_MAX = 500;
  * it cannot be read: a broken or foreign one is ignored whole, never half-trusted) a launch not
  * noted since this activation is unknown, and its hooks are held as in the default mode.
  */
-export function createLaunchModes({ file = null } = {}) {
+export function createLaunchModes({ file = null, now = Date.now } = {}) {
   const byHost = new Map();
-  const entry = (permissionMode, askRules) => ({
+  // cid/at: the Copilot id the launch runs (absent for --continue, which learns it at its first
+  // hook) and when its prepare() ran — the ledger's cut before the launch's first span is flushed
+  const entry = (permissionMode, askRules, cid, at) => ({
     permissionMode: PERMISSION_MODES.includes(permissionMode) ? permissionMode : "default",
     askRules: Array.isArray(askRules) ? askRules.filter((r) => typeof r === "string") : [],
+    ...(typeof cid === "string" && SESSION_ID_RE.test(cid) && Number.isFinite(at) ? { cid: cid.toLowerCase(), at } : {}),
   });
   if (file) {
     let rows = null;
@@ -191,9 +194,10 @@ export function createLaunchModes({ file = null } = {}) {
       rows = doc?.v === 1 && Array.isArray(doc.launches) ? doc.launches : [null];
     } catch (e) { readFailed(e, "reading the launch modes", file); }
     const ok = rows && rows.every((r) => typeof r?.sid === "string" && r.sid && typeof r.permissionMode === "string"
-      && Array.isArray(r.askRules) && r.askRules.every((s) => typeof s === "string")); // a dropped rule is one hold fewer
+      && Array.isArray(r.askRules) && r.askRules.every((s) => typeof s === "string") // a dropped rule is one hold fewer
+      && (r.cid === undefined || (typeof r.cid === "string" && SESSION_ID_RE.test(r.cid) && Number.isFinite(r.at))));
     if (rows && !ok) warn("launches-shape", `the launch modes ${file} are not in the expected shape; every launch in it is held as unknown`);
-    if (ok) for (const r of rows.slice(-LAUNCHES_MAX)) byHost.set(r.sid, entry(r.permissionMode, r.askRules));
+    if (ok) for (const r of rows.slice(-LAUNCHES_MAX)) byHost.set(r.sid, entry(r.permissionMode, r.askRules, r.cid, r.at));
   }
   function save() {
     if (!file) return;
@@ -206,15 +210,22 @@ export function createLaunchModes({ file = null } = {}) {
     } catch (e) { readFailed(e, "writing the launch modes", file); }
   }
   return {
-    note(req) {
+    /** `plan`: buildLaunch's answer (its `backendSessionId` is the Copilot id, when known at launch). */
+    note(req, plan = null) {
       const sid = typeof req?.hostSessionId === "string" ? req.hostSessionId : "";
       if (!sid) return;
       byHost.delete(sid);
-      byHost.set(sid, entry(req?.launch?.permissionMode ?? "default", req?.askRules));
+      byHost.set(sid, entry(req?.launch?.permissionMode ?? "default", req?.askRules, plan?.backendSessionId, now()));
       while (byHost.size > LAUNCHES_MAX) byHost.delete(byHost.keys().next().value);
       save();
     },
     get: (sid) => byHost.get(sid) ?? null,
+    /** Copilot id → the earliest recorded launch of it, or null. */
+    launchedAt(cid) {
+      let at = null;
+      for (const l of byHost.values()) if (l.cid === cid && (at == null || l.at < at)) at = l.at;
+      return at;
+    },
   };
 }
 
@@ -295,7 +306,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
   const ls = createLogSources(sessionLog);
   // ONE span reader for the ledger and the context gauge: one follower per span file, not two.
   otel ??= createOtelReader(otelDir, { tail, maxWindows: 1 });
-  const ledger = createLedger({ home, otelDir, tail, otel });
+  const ledger = createLedger({ home, otelDir, tail, otel, launchedAt: (id) => launches?.launchedAt?.(id) ?? null });
   return {
     id: BACKEND_ID,
     label: "GitHub Copilot",
@@ -305,7 +316,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
     async prepare(req) {
       refreshHooks(); // the sink's port is today's; a hooks.json from an older run would post nowhere
       const plan = buildLaunch(req, { pluginDir, otelDir });
-      launches?.note(req); // only a launch that was built: a refused mode throws above
+      launches?.note(req, plan); // only a launch that was built: a refused mode throws above
       return plan;
     },
     delivery: DELIVERY,

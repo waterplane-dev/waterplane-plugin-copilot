@@ -4,6 +4,7 @@
  *
  *   createLedger({ home, otelDir, tail, otel? }) → { ledger(maxAgeMs): Promise<BackendTokensDoc> }
  *   (otel: the shared span reader; when given, ITS clock evicts spans, not `now`)
+ *   (launchedAt: Copilot id → when this plugin's earliest recorded prepare() for it ran, or null)
  *
  * Two measured sources, never blended into one number:
  * - `session.usage_checkpoint` in each `events.jsonl` (once per prompt, after
@@ -64,7 +65,7 @@ export function kindsOf(c) {
   return k;
 }
 
-export function createLedger({ home, otelDir, tail, now = Date.now, otel = null } = {}) {
+export function createLedger({ home, otelDir, tail, now = Date.now, otel = null, launchedAt = null } = {}) {
   // one 1 MiB window per synchronous step: a long first read yields to the event loop between
   // windows (see catchUp), and every file is read to its end before the doc is built
   otel ??= createOtelReader(otelDir, { tail, now, maxWindows: 1 });
@@ -130,15 +131,39 @@ export function createLedger({ home, otelDir, tail, now = Date.now, otel = null 
     // checkpoint), or before the OTel file's birth when no span names the id yet. Earlier
     // checkpoints are a plain terminal's (or, in a fork, the parent's copies): not counted, but
     // they seed the running total so the first counted delta is this launch's own.
-    const countFrom = (s) => {
-      let at = firstSpan.get(s.id), bySpan = at != null;
-      if (!bySpan && fileIds.has(s.id)) {
-        try { const st = statSync(join(otelDir, `${s.id}.jsonl`)); at = Math.min(st.birthtimeMs > 0 ? st.birthtimeMs : Infinity, st.mtimeMs); } catch (e) { readFailed(e, "statting a span file", otelDir); at = null; }
-      }
-      if (at == null) return -Infinity;
+    // The launch record, when there is one, names the moment before the launch's own start: the
+    // first start at or after it is the one the launch wrote. Before a first span is flushed this
+    // is the only exact cut (file times are rewritten as spans flush); with both, the earlier wins
+    // (the records keep the newest launches, the span the oldest ever read).
+    const byRecord = (s) => {
+      let rec;
+      try { rec = launchedAt?.(s.id); } catch { rec = null; }
+      if (!Number.isFinite(rec)) return null;
+      let start = null;
+      for (const t of s.starts) if (t >= rec && (start == null || t < start)) start = t;
+      return start ?? rec;
+    };
+    const latestStartAtOrBefore = (s, at) => {
       let start = null;
       for (const t of s.starts) if (t <= at && (start == null || t > start)) start = t;
-      return start ?? (bySpan ? at : -Infinity); // no start event known: a file's time is too loose to cut on
+      return start;
+    };
+    const countFrom = (s) => {
+      const span = firstSpan.get(s.id);
+      const bySpan = span != null ? (latestStartAtOrBefore(s, span) ?? span) : null;
+      const rec = byRecord(s);
+      if (bySpan != null) return rec == null ? bySpan : Math.min(bySpan, rec);
+      // No span read yet: the span file's times, and the record's cut when it is EARLIER. Never
+      // the record alone: a launch that spent may have no record of its own (a /fork in the
+      // parent's window, --continue, a relaunch, the 500 cap, a launch from before records) while
+      // a LATER --resume of the id has one — the record must not move the cut past that spend.
+      return Math.min(rec ?? Infinity, byFile(s));
+    };
+    const byFile = (s) => {
+      if (!fileIds.has(s.id)) return -Infinity;
+      let at;
+      try { const st = statSync(join(otelDir, `${s.id}.jsonl`)); at = Math.min(st.birthtimeMs > 0 ? st.birthtimeMs : Infinity, st.mtimeMs); } catch (e) { readFailed(e, "statting a span file", otelDir); return -Infinity; }
+      return latestStartAtOrBefore(s, at) ?? -Infinity; // no start event known: a file's time is too loose to cut on
     };
 
     // credits (or premium requests) per local day, from checkpoint deltas

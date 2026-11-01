@@ -186,7 +186,11 @@ during the hold (see below).
   ONE population: the sessions this plugin launched (those with an OTel file, `<id>.jsonl` or the
   span's conversation id); plain-terminal Copilot sessions in `~/.copilot` are in neither. Credits
   count from the plugin's first launch of a session, so a terminal session resumed here brings no
-  older spend, and a `/fork` counts only its own credits, not the parent's it copied. Token spans
+  older spend, and a `/fork` counts only its own credits, not the parent's it copied. "The first
+  launch" is the earlier of: the start event at or before the session's first span, and the first
+  start at or after the launch's recorded `prepare()` (`launches.json`). Before any span is read,
+  the record's cut counts only when it is earlier than the span file's birth/mtime guess (a later
+  `--resume` record must not cut off a launch that left none of its own). Token spans
   are kept for 50 days (the hourly rows cover 45), so older days carry credits only. Every log is
   read to its end before the document is answered. Nothing on disk is `available: false` with a
   sentence, never zeros.

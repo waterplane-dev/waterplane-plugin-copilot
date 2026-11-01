@@ -113,3 +113,21 @@ test("a refused launch is not recorded (prepare throws before anything is noted)
     assert.equal(host.createLaunchModes({ file: join(a.dataDir, "launches.json") }).get("wp-9"), null);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test("the record keeps the launch's Copilot id and time (the ledger's cut); a bad id refuses the file", () => {
+  const d = dir();
+  try {
+    const file = join(d, "launches.json");
+    let t = 1000;
+    const l = host.createLaunchModes({ file, now: () => t });
+    const HEX = "abcdef01-2222-4333-8444-5555555555ee";
+    l.note(allowAll("wp-1"), { backendSessionId: HEX.toUpperCase() });
+    t = 2000; l.note(allowAll("wp-2"), { backendSessionId: HEX });
+    t = 3000; l.note(allowAll("wp-3"), {}); // --continue: no id at launch
+    const after = host.createLaunchModes({ file });
+    assert.equal(after.launchedAt(HEX), 1000, "the earliest launch of that id, lower-cased as Copilot names its dirs");
+    assert.equal(after.launchedAt(ID8), null);
+    writeFileSync(file, JSON.stringify({ v: 1, launches: [{ sid: "wp-1", permissionMode: "bypassPermissions", askRules: [], cid: "../x", at: 1 }] }));
+    assert.equal(host.createLaunchModes({ file }).get("wp-1"), null);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
