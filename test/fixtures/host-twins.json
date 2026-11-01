@@ -294,5 +294,22 @@
     false
    ]
   ]
- }
+ },
+ "trust": [
+  {
+   "name": "trust-dialog-120",
+   "squashed": "[current]sessionsissuespullrequestsgists╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│││╭─╮╭─╮│gettingstarted││╰─╯╰─╯copilotv1.0.98usesai.│usethetabsabovetoexploreyoursessionsandpullrequests││█▘▝█checkformistakes.│/init—initializecopilotinstructionsforthisrepository││▔▔▔▔│/model—switchmodelsacrossproviders,oruseauto│││╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯!failedtoload1skill.run/skillsformoredetails.●tip:/diff└reviewthechangesmadeinthecurrentdirectory╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│confirmfoldertrust││────────────────────────────────────────────────────────────────────────────────────────────────────────────────────││╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│││/private/tmp/claude-501/-users-someuser-dev-usmc/1865a719-73f5-4c91-97df-2047b8efe173/scratchpad/trusthqzh│││╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯││││copilotcanreadfilesinthisfolderand,withyourpermission,editthemorruncodeandshellcommands.itwill││rememberyourpermissionsfortherestofthissession.││││doyoutrustthefilesinthisfolder?││││❯1.yes││2.yes,andrememberthisfolderforfuturesessions││3.no(esc)││││↑/↓tonavigate·entertoselect·esctocancel│╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯",
+   "asks": true
+  },
+  {
+   "name": "trust-dialog-80",
+   "squashed": "[current]sessionsissuespullrequestsgists││┃╰────────────────────────────────────────────────────────────────────────────╯┃┃!failedtoload1skill.run/skillsformoredetails.┃┃●tip:/instructions┃└viewandtogglecustominstructionfiles┃┃╭──────────────────────────────────────────────────────────────────────────────╮│confirmfoldertrust││────────────────────────────────────────────────────────────────────────────││╭──────────────────────────────────────────────────────────────────────────╮│││/private/tmp/claude-501/-users-someuser-dev-usmc/1865a719-73f5-4c91-97df││││-2047b8efe173/scratchpad/trust39j8q│││╰──────────────────────────────────────────────────────────────────────────╯││││copilotcanreadfilesinthisfolderand,withyourpermission,editthem││orruncodeandshellcommands.itwillrememberyourpermissionsforthe││restofthissession.││││doyoutrustthefilesinthisfolder?││││❯1.yes││2.yes,andrememberthisfolderforfuturesessions││3.no(esc)││││↑/↓tonavigate·entertoselect·esctocancel│╰──────────────────────────────────────────────────────────────────────────────╯",
+   "asks": true
+  },
+  {
+   "name": "idle",
+   "squashed": "────────────────────────────────────────────❯────────────────────────────────────────────←opensidebar·interactive·manualapproval·/commands·?help·tabnexttabgithubcopilot•auto·high",
+   "asks": false
+  }
+ ]
 }

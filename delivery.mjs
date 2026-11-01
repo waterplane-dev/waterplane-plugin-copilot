@@ -35,7 +35,7 @@ export const COMPOSER_RULE_RE = /^[─━┄┅┈┉]{20,}$/;
  * removed, lower-cased). The probe matched `Confirm folder trust`; the option
  * row reads `2. Yes, and remember this folder for future sessions`. Text typed
  * into this dialog would answer it, so the host must not deliver while it is up.
- * twin: trustSquash (the host's squash: whitespace out, lower case — not bound yet)
+ * twin: trustSquash (the host's `echo.ts` squash of the last 40 rows, read by `derive.ts` trustRule)
  */
 export const TRUST_PROMPT_RE = /confirmfoldertrust|rememberthisfolderforfuturesessions/;
 

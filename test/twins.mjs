@@ -109,6 +109,25 @@ export const PINNED = {
     const { HOLD_DEFAULT_MS } = await import("../host.mjs");
     eq(HOLD_DEFAULT_MS, c.PLUGIN_HOOK_HOLD_DEFAULT_MS, "the hold default");
   },
+  async trustSquash(side) {
+    // Plugin side: TRUST_PROMPT_RE on the host's squash of the measured trust screens (recorded) and
+    // an idle composer; host side: the live host squashes the same screens to the same text, and the
+    // regex answers the same on it. (The host's trustRule also asks on these screens through claude's
+    // own words, `doyoutrust`, so it cannot tell whether this regex still matches: not used here.)
+    // Not bound: the 40 rows the host squashes (deliverscreen.ts `screen()`), written here.
+    const { TRUST_PROMPT_RE } = await import("../delivery.mjs");
+    if (side === "plugin") {
+      for (const t of GOLD.trust) eq(TRUST_PROMPT_RE.test(t.squashed), t.asks, `plugin trust on ${t.name}`);
+      return;
+    }
+    const echo = await live("host", "echo.js");
+    if (!echo) return NO_HOST;
+    for (const t of GOLD.trust) {
+      const live = echo.squash(TRUST_SCREENS[t.name]);
+      eq(live, t.squashed, `host squash of ${t.name}`);
+      eq(TRUST_PROMPT_RE.test(live), t.asks, `trust on the host's squash of ${t.name}`);
+    }
+  },
   async commandBounds(side) {
     const c = await contract(side);
     if (!c) return NO_HOST;
@@ -118,6 +137,14 @@ export const PINNED = {
     eq(JSON.stringify(c.sourceCommandsProblems(list)), "[]", `${side}: a huge help parses within the contract`);
     eq(list.length, c.SOURCE_COMMANDS_MAX, "as many rows as the contract takes");
   },
+};
+
+const fixture = (f) => readFileSync(new URL(`./fixtures/copilot-1.0.98/${f}`, import.meta.url), "utf8").trimEnd().split("\n").slice(-40).join("\n");
+/** The screens `GOLD.trust` was recorded from: the host squashes the last 40 rows. */
+const TRUST_SCREENS = {
+  "trust-dialog-120": fixture("trust-dialog-120.txt"),
+  "trust-dialog-80": fixture("trust-dialog-80.txt"),
+  idle: "────────────────────────────────────────────\n❯\n────────────────────────────────────────────\n ← open sidebar · Interactive · Manual Approval · / commands · ? help · tab next tab\n GitHub Copilot • Auto · High",
 };
 
 /** UTF-16 lengths around the bound, astral characters (2 units each), every control range. */
