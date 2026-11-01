@@ -47,7 +47,10 @@ const WANT = ["session.info", "session.mode_changed", "session.start", "session.
 const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 const ts = (e) => { const t = Date.parse(e?.timestamp); return Number.isFinite(t) ? t : undefined; };
 
-/** Shift+Tab's cycle, measured (probe-main-1098 06:30:35–39). */
+/**
+ * Shift+Tab's cycle, measured (probe-main-1098 06:30:35–39). A `set` presses up to length-1
+ * times: within the host's `SOURCE_KEYS_MAX`. twin: modeKeysMax
+ */
 export const MODE_CYCLE = Object.freeze(["interactive", "plan", "autopilot"]);
 
 /** Copilot's mode name → the PermissionMode it reads as, or null (unknown). Autopilot runs without

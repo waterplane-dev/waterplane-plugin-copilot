@@ -11,6 +11,18 @@
         "scripts/copilot-drift.mjs",
         "--reading"
       ]
+    },
+    {
+      "key": "unpinnedTwins",
+      "name": "Copied host rules with nothing binding them",
+      "means": "How many rules this plugin keeps its own copy of from the waterplane host or the plugin contract (the ask-rule matcher and the gate's words, the typed-reason check, the composer anchors, the key, hold and command-list bounds; each marked `twin: <name>` in a source comment) that no two-sided check in test/twins.mjs binds, or whose plugin-side check fails. The live host side is checked by `npm test` when the main repo is built, not by this reading, so a change in the host shows as a failing test, never here. A copy nobody marked is not counted. A copy nothing binds drifts silently: the 2026-10-29 D6 and the 2026-11-01 allow-all bugs were both a copy that answered differently from its original.",
+      "better": "lower",
+      "unit": "rules",
+      "run": [
+        "node",
+        "scripts/twins.mjs",
+        "--reading"
+      ]
     }
   ]
 }

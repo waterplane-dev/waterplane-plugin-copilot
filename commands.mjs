@@ -56,7 +56,7 @@ export const isLocalCommand = (text) => slashVerdict(text) === "local";
 
 const ROW = /^ {4}(\/[a-z][a-z0-9-]*)\s{2,}(\S.*)$/;
 
-/** `copilot help commands` text → SourceCommand[] (null when nothing parses). */
+/** `copilot help commands` text → SourceCommand[] (null when nothing parses), within the contract's bounds. twin: commandBounds */
 export function parseHelpCommands(text) {
   const out = [];
   const seen = new Set();

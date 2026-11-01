@@ -40,6 +40,7 @@ import { createCommandSource } from "./commands.mjs";
 const execFileP = promisify(execFile);
 
 export const BACKEND_ID = "copilot";
+/** The contract's default hold (`PLUGIN_HOOK_HOLD_DEFAULT_MS`). twin: holdDefault */
 export const HOLD_DEFAULT_MS = 8000;
 
 /** The hold, from settings: a number in 0..30000, else the default. */

@@ -109,8 +109,8 @@ export const ASK_OTHER_ROW = "Other (type your answer)";
 const ASK_HINT_RE = /↑\/↓ select\b.*\benter accept/;
 const ASK_HEAD_RE = /Copilot needs information\./;
 const ARROW_UP = "\x1b[A", ARROW_DOWN = "\x1b[B";
-/** `SOURCE_KEYS_MAX` (8): the arrows plus one Return. */
-const ASK_MAX_MOVES = 7;
+/** `SOURCE_KEYS_MAX` (8): the arrows plus one Return. twin: askKeysMax */
+export const ASK_MAX_MOVES = 7;
 const squash = (s) => String(s ?? "").replace(/\s+/g, "");
 
 /**
@@ -239,13 +239,13 @@ const TOOL_OPTIONS_TUI = Object.freeze([{ index: 1, label: "Yes" }, { index: 3, 
 
 const str = (v) => (typeof v === "string" && v.trim() ? v : null);
 
-/** The host's bound on words it types (`SOURCE_TYPED_MAX`, contract 2.1). */
+/** The host's bound on words it types (`SOURCE_TYPED_MAX`, contract 2.1). twin: typedReason */
 const TYPED_MAX = 1000;
 /**
  * Why the host would refuse to type `words` as a reason, or null — its `sourceTypedProblem`: at
  * most `TYPED_MAX` characters, one line, no control character (C0, DEL, C1).
  */
-function typedProblem(words) {
+export function typedProblem(words) {
   if (words.length > TYPED_MAX) return `that reason is ${words.length} characters, and one typed into Copilot's dialog takes at most ${TYPED_MAX} — shorten it; nothing was pressed`;
   for (let i = 0; i < words.length; i++) {
     const c = words.charCodeAt(i);

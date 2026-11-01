@@ -1,0 +1,298 @@
+{
+ "capturedFrom": "usmc 505cf8ba packages/host dist: askrules.js askRuleMatches, composer.js CLAUDE_COMPOSER",
+ "askRuleMatches": [
+  [
+   "Bash(git push*)",
+   "Do you want to run this command?\ngit  PUSH --force",
+   true
+  ],
+  [
+   "Bash(a.b)",
+   "axb",
+   false
+  ],
+  [
+   "Bash",
+   "anything",
+   false
+  ],
+  [
+   "Bash(*)",
+   "anything",
+   false
+  ],
+  [
+   "Bash( * )",
+   "x",
+   false
+  ],
+  [
+   "Edit(*.env*)",
+   "Copilot asks permission to edit /r/.env.local.",
+   true
+  ],
+  [
+   "X(use web_fetch)",
+   "Copilot asks permission to use web_fetch.",
+   true
+  ],
+  [
+   "Bash(rm -rf*)",
+   "rm   -rf /",
+   true
+  ],
+  [
+   "Bash(rm -rf*)",
+   "rm-rf /",
+   true
+  ],
+  [
+   "bash(GIT push)",
+   "git push",
+   true
+  ],
+  [
+   "Bash(a(b))",
+   "a(b)",
+   true
+  ],
+  [
+   "Bash(a(b))",
+   "ab",
+   false
+  ],
+  [
+   "9x(y)",
+   "y",
+   false
+  ],
+  [
+   "Bash(git*push)",
+   "git commit && push",
+   true
+  ],
+  [
+   "Bash(x)",
+   "",
+   false
+  ],
+  [
+   "Bash(  spaced  rule )",
+   "spaced rule",
+   true
+  ],
+  [
+   "Bash([x]+)",
+   "[x]+",
+   true
+  ],
+  [
+   "Bash(\\\\d)",
+   "\\\\d",
+   true
+  ],
+  [
+   "Bash(ünï)",
+   "ÜNÏ",
+   true
+  ],
+  [
+   "Bash(a|x)",
+   "only x here",
+   false
+  ],
+  [
+   "Bash(a|x)",
+   "a|x",
+   true
+  ],
+  [
+   "Bash(a?)",
+   "a",
+   false
+  ],
+  [
+   "Bash(a?)",
+   "a?",
+   true
+  ],
+  [
+   "Bash(a+)",
+   "aaa",
+   false
+  ],
+  [
+   "Bash(^git)",
+   "run git",
+   false
+  ],
+  [
+   "Bash(git$)",
+   "git x",
+   false
+  ],
+  [
+   "Bash(a{2})",
+   "aa",
+   false
+  ],
+  [
+   "Bash(a{2})",
+   "a{2}",
+   true
+  ],
+  [
+   "Bash([ab])",
+   "b",
+   false
+  ],
+  [
+   "Bash(\\\\)",
+   "a\\\\b",
+   true
+  ],
+  [
+   "Bash(a.b*c)",
+   "a.bzzc",
+   true
+  ],
+  [
+   "Bash(x)",
+   "X\nY",
+   true
+  ],
+  [
+   "Bash(git$)",
+   "git",
+   false
+  ],
+  [
+   "Bash(^git)",
+   "git",
+   false
+  ],
+  [
+   "Bash(a)b)",
+   "a)b",
+   true
+  ]
+ ],
+ "composer": {
+  "cursor": [
+   [
+    "❯",
+    true
+   ],
+   [
+    "❯ ",
+    true
+   ],
+   [
+    "❯ x",
+    true
+   ],
+   [
+    "❯x",
+    false
+   ],
+   [
+    "> x",
+    false
+   ],
+   [
+    " ❯ past turn",
+    false
+   ],
+   [
+    "❯\tx",
+    true
+   ],
+   [
+    "────────────────────",
+    false
+   ],
+   [
+    "───────────────────",
+    false
+   ],
+   [
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    false
+   ],
+   [
+    "┄┅┈┉┄┅┈┉┄┅┈┉┄┅┈┉┄┅┈┉",
+    false
+   ],
+   [
+    "══════════════════════════════",
+    false
+   ],
+   [
+    "──────────────────── ",
+    false
+   ],
+   [
+    "------------------------------",
+    false
+   ]
+  ],
+  "rule": [
+   [
+    "❯",
+    false
+   ],
+   [
+    "❯ ",
+    false
+   ],
+   [
+    "❯ x",
+    false
+   ],
+   [
+    "❯x",
+    false
+   ],
+   [
+    "> x",
+    false
+   ],
+   [
+    " ❯ past turn",
+    false
+   ],
+   [
+    "❯\tx",
+    false
+   ],
+   [
+    "────────────────────",
+    true
+   ],
+   [
+    "───────────────────",
+    false
+   ],
+   [
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    true
+   ],
+   [
+    "┄┅┈┉┄┅┈┉┄┅┈┉┄┅┈┉┄┅┈┉",
+    true
+   ],
+   [
+    "══════════════════════════════",
+    false
+   ],
+   [
+    "──────────────────── ",
+    false
+   ],
+   [
+    "------------------------------",
+    false
+   ]
+  ]
+ }
+}

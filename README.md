@@ -358,6 +358,15 @@ resume. It spends 0 AI credits and exits non-zero on any FAIL. `copilot-drift` c
 `copilot` with the versions measured here, but it does NOT fail on drift (it exits non-zero only when
 it cannot assess), so read its output: if it reports more than 0, measure the new version first (fixtures under `test/fixtures/copilot-<ver>/`) before releasing.
 
+Rules this plugin must answer exactly as the host does — the ask-rule matcher and the gate's words,
+the typed-reason check, the composer anchors, the key, hold and command-list bounds — are copies,
+each marked `twin: <name>` in a source comment and bound by a check in `test/twins.mjs` that runs
+on both sides: the copy against recorded host answers (`test/fixtures/host-twins.json`) or the
+vendored contract, and the built host against the same record. A new copy gets a marker and a
+check; `node scripts/twins.mjs` lists them (`--reading` is the `unpinnedTwins` health reading).
+When the host changes one of these rules, the host-side twin test fails: re-record the fixture
+from the host and fix the copy.
+
 Then bump `version` in `package.json` and `waterplane-plugin.json`, commit with the probe's result
 line (`10/11 pass` style) in the message, and tag `v<version>`. `--spend` (about 4 prompts) is the
 fuller check when the permission path changed.

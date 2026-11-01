@@ -6,8 +6,9 @@
  * The composer is the same SHAPE as claude's: a full-width `─` (U+2500) rule,
  * a row starting `❯` (U+276F), a closing `─` rule. So the same two anchors the
  * host's echo rules use place an echo inside the box, and they are declared
- * here byte-for-byte equal to the host's (`echo.ts` COMPOSER_CURSOR_RE /
- * COMPOSER_RULE_RE) — the host owns the rule, this only says it applies.
+ * here equal to the host's (`composer.ts` COMPOSER_CURSOR_RE / COMPOSER_RULE_RE,
+ * its `CLAUDE_COMPOSER`) — the host owns the rule, this only says it applies.
+ * twin: composerCursor, composerRule
  *
  *     ────────────────────────────────────────────
  *     ❯
@@ -21,9 +22,9 @@
  * with no full-width rule above it either.
  */
 
-/** The input row. `❯` only, never `>` (same reasoning as the host's own copy). */
 import { isLocalCommand } from "./commands.mjs";
 
+/** The input row. `❯` only, never `>` (same reasoning as the host's own copy). */
 export const COMPOSER_CURSOR_RE = /^❯(?:[\s ]|$)/;
 
 /** The composer's full-width rules, above and below the input row. */
@@ -34,6 +35,7 @@ export const COMPOSER_RULE_RE = /^[─━┄┅┈┉]{20,}$/;
  * removed, lower-cased). The probe matched `Confirm folder trust`; the option
  * row reads `2. Yes, and remember this folder for future sessions`. Text typed
  * into this dialog would answer it, so the host must not deliver while it is up.
+ * twin: trustSquash (the host's squash: whitespace out, lower case — not bound yet)
  */
 export const TRUST_PROMPT_RE = /confirmfoldertrust|rememberthisfolderforfuturesessions/;
 
