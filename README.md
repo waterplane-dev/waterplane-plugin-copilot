@@ -130,7 +130,8 @@ during the hold (see below).
   above) and the request appears on the phone as a box. Its id is the tool call's own `toolCallId`
   (read from `tool.execution_start`; for a non-shell tool, whose hook and call carry different names
   — measured: hook `edit {file_path, diff}`, call `create` or `apply_patch` — the one unanswered
-  call with the same tool name, or a `create`/`edit`/`apply_patch` about the hook's own file; any
+  call with the same tool name, or a write call (`toolcalls.mjs`: `create`, `edit`, `apply_patch`, …)
+  naming the hook's own file, both resolved against the hook's cwd (a patch may name it relative); any
   other case gets a minted id until `permission.requested` names the call). A tap goes through the daemon's one answer path and answers the hook: **Yes** ⇒
   `{behavior:"allow"}`, **No** ⇒ `{behavior:"deny", message}`. No tap in time ⇒ the daemon answers
   `{}`, Copilot shows its own dialog, and the SAME box stays on the phone, re-worded in Copilot's

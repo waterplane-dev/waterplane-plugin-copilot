@@ -79,6 +79,7 @@
  * fields) is not posed; it is reported `unposed`, which the host shows as waiting on you.
  */
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { SHELL_TOOLS, callFiles, inputFile, resolvePath } from "./toolcalls.mjs";
 import { eventsPath } from "./paths.mjs";
 import { readTrustDialog, trustQuestion, TRUST_KEYS, TRUST_MISSES, TRUST_OPTIONS, TRUST_ROWS } from "./trust.mjs";
 
@@ -306,28 +307,21 @@ function questionOf(r) {
   return [`Copilot asks permission to use ${r.toolName}.`, input].filter(Boolean).join("\n");
 }
 
-const SHELL_TOOLS = new Set(["bash", "shell", "powershell"]);
-/** The calls a file hook (`edit {file_path}`) is measured to come from: `create {path}`, `apply_patch "<patch>"`. */
-const FILE_CALLS = new Set(["create", "edit", "apply_patch"]);
-/** The files an `apply_patch` call's patch text names (`*** Add File: <path>`, measured 1.0.98). */
-const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
-
 /**
  * Can `tool.execution_start` data `d` be the call a non-shell hook (`toolName`, `toolInput`) asks
- * about? The same tool name, or a file-writing call (`FILE_CALLS`) about the hook's own file.
- * Anything else — a parallel `view` of that file, a `read_agent` — is another call, and the box
- * gets a minted id instead.
+ * about? The same tool name, or a write call (toolcalls.mjs `callFiles`) naming the hook's own
+ * file — both resolved against the hook's `cwd`, since a patch may name it relative. Anything
+ * else — a parallel `view` of that file, a `read_agent` — is another call, and the box gets a
+ * minted id instead.
  */
-function sameCall(toolName, toolInput, d) {
+function sameCall(toolName, toolInput, d, cwd) {
   if (SHELL_TOOLS.has(d.toolName)) return false;
   if (toolName && d.toolName === toolName) return true;
-  const file = pathOf(toolInput);
-  if (!file || !FILE_CALLS.has(d.toolName)) return false;
-  if (typeof d.arguments !== "string") return pathOf(d.arguments) === file;
-  for (const m of d.arguments.matchAll(PATCH_FILE_RE)) if (m[1].trim() === file) return true;
-  return false;
+  const file = resolvePath(pathOf(toolInput), cwd);
+  return !!file && callFiles(d.toolName, d.arguments, cwd).includes(file);
 }
 /**
+ * twin: askRuleMatches
  * An ask rule against text — the SAME rule as the host's gate (usmc `packages/host/src/askrules.ts`,
  * `askRuleMatches`): the pattern inside `Tool(...)` is looked for anywhere, `*` is any run, case and
  * whitespace runs are ignored; a bare tool rule or a pattern of only `*` matches nothing. Matching
@@ -369,8 +363,10 @@ export function hookAskRuleHit(rules, payload, { rulesSupported = true } = {}) {
   return rules.find((r) => typeof r === "string" && texts.some((t) => askRuleMatches(r, t))) ?? null;
 }
 
-/** The file a non-shell hook input is about (`edit {file_path}` measured; `path` / `fileName` tolerated). */
-const pathOf = (input) => (input && typeof input === "object" ? str(input.file_path) ?? str(input.path) ?? str(input.fileName) : null);
+/** The file a non-shell hook input is about (`edit {file_path}` measured; the rest tolerated): toolcalls.mjs. */
+const pathOf = inputFile;
+/** The session's cwd as the host gave it (Copilot's own spelling), not the slot's realpath. */
+const rawCwd = (slot) => str(slot.ss?.cwd) ?? slot.cwd;
 
 /**
  * The complete lines of `path` from byte `from` (or from the last `max` bytes,
@@ -437,7 +433,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     const r = {
       id: f.id, toolCallId: f.toolCallId ?? null, requestId: f.requestId ?? null,
       toolName: f.toolName, shell: f.shell, command: f.command ?? null, intention: f.intention ?? null,
-      toolInput: f.toolInput ?? null, ident: identOf(f.command, f.commands),
+      toolInput: f.toolInput ?? null, ident: identOf(f.command, f.commands), cwd: f.cwd ?? null,
       phase: f.phase, confirmed: !!f.confirmed, typedAt: null, settle: null, at: now(), prompt: null, offersRule: true,
     };
     setPrompt(r, f.prompt, f.permissionRequest);
@@ -589,7 +585,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
           // a non-shell box published under a minted id: the same file, else the only such box
           const loose = [...st(slot).open.values()].filter((x) => !x.shell && !x.toolCallId && !x.requestId && x.phase !== "done");
           const file = str(pr.fileName);
-          r = (file && loose.find((x) => pathOf(x.toolInput) === file)) || (loose.length === 1 && !pathOf(loose[0].toolInput) ? loose[0] : null);
+          r = (file && loose.find((x) => resolvePath(pathOf(x.toolInput), x.cwd ?? rawCwd(slot)) === resolvePath(file, x.cwd ?? rawCwd(slot)))) || (loose.length === 1 && !pathOf(loose[0].toolInput) ? loose[0] : null);
         }
         if (d.resolvedByHook === true) { if (r) drop(r); return; } // decided by a hook: never the phone's question
         if (r) {
@@ -697,7 +693,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   }
 
   /** The toolCallId (and description) of the tool call a permission hook is about, from the tail. */
-  function toolCallFor(slot, toolName, command, toolInput = null) {
+  function toolCallFor(slot, toolName, command, toolInput = null, cwd = rawCwd(slot)) {
     readTail(slot);
     const s = st(slot);
     const done = new Set();
@@ -713,7 +709,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
         // A non-shell hook names its tool differently from the call (measured: hook `edit`, call
         // `apply_patch`), so a call is taken only when it can be the hook's (`sameCall`) and is the
         // ONE such unanswered call — never a parallel `view` or `read_agent` that happens to run.
-        if (sameCall(toolName, toolInput, d)) others.push(tcid);
+        if (sameCall(toolName, toolInput, d, cwd)) others.push(tcid);
         continue;
       }
       if (toolName && d.toolName && d.toolName !== toolName) continue;
@@ -732,7 +728,8 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     const command = shell ? str(toolInput?.command) : null;
     // Too little to ask anybody, or no hold to wait on: Copilot shows its own dialog.
     if (!toolName || (shell && !command) || !hold || typeof hold.onExpired !== "function") return {};
-    const hit = toolCallFor(slot, toolName, command, toolInput);
+    const cwd = str(payload?.cwd) ?? rawCwd(slot); // the hook's own cwd: the one Copilot resolves a patch in
+    const hit = toolCallFor(slot, toolName, command, toolInput, cwd);
     // A hook re-fired for a call whose dialog is already held (same tool, same command or input; its
     // toolCallId is taken, so `hit` is null): ONE dialog, the NEW hold replaces the old. The old hook's
     // response is released as `{}` (the core would have answered that at its expiry anyway) and its
@@ -751,7 +748,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     }
     const r = makeRecord(slot, {
       id: hit?.toolCallId ?? `copilot-perm-${now()}-${++minted}`, toolCallId: hit?.toolCallId,
-      toolName, shell, command, intention: hit?.intention, toolInput: shell ? null : toolInput, phase: "hook",
+      toolName, shell, command, intention: hit?.intention, toolInput: shell ? null : toolInput, phase: "hook", cwd,
     });
     const held = new Promise((resolve) => { r.settle = resolve; });
     const mine = r.settle;
@@ -768,7 +765,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     const t0 = now();
     const look = () => {
       if (published) return;
-      const h = toolCallFor(slot, toolName, command, toolInput);
+      const h = toolCallFor(slot, toolName, command, toolInput, cwd);
       if (h) {
         r.id = r.dialog.id = h.toolCallId;
         r.toolCallId = h.toolCallId;

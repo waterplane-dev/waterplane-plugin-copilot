@@ -30,13 +30,13 @@
 import { existsSync, statSync } from "node:fs";
 import { eventsPath, sessionDir, SESSION_ID_RE } from "./paths.mjs";
 import { follow } from "./jsonl.mjs";
+import { callFiles, resolvePath } from "./toolcalls.mjs";
 
 const AGENT_STALE_MS = 600000;
 const LABEL_MAX = 120;
 const PROMPT_LABEL_MAX = 80;
 const INPUT_MAX = 2000;
 const RESULT_MAX = 4000;
-const WRITE_TOOLS = new Set(["edit", "create", "write", "str_replace", "str_replace_editor", "apply_patch", "multiedit"]);
 
 const str = (v) => (typeof v === "string" ? v : undefined);
 const oneLine = (s, max) => {
@@ -63,17 +63,6 @@ const pretty = (v) => {
   return s.length > INPUT_MAX ? s.slice(0, INPUT_MAX) + "…" : s;
 };
 
-/** Repo paths a write tool's raw arguments name — read before `pretty` cuts them. apply_patch's
- *  arguments are the patch text itself (measured 1.0.98): its `*** Add/Update/Delete File:` and
- *  `*** Move to:` headers name the files. */
-function writtenPaths(name, args) {
-  if (!WRITE_TOOLS.has(String(name).toLowerCase())) return [];
-  const patch = typeof args === "string" ? args : str(args?.input) ?? str(args?.patch);
-  if (patch != null) return [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?)\s*$/gm)].map((m) => m[1]);
-  const p = args && typeof args === "object" ? str(args.path) ?? str(args.filePath) ?? str(args.file_path) : undefined;
-  return p ? [p] : [];
-}
-
 /** The incremental fold. `push(event)` per parsed line; `turns()` the current document body. */
 export function foldEvents({ now = Date.now } = {}) {
   const turns = [];                    // in order of first user.message
@@ -82,8 +71,9 @@ export function foldEvents({ now = Date.now } = {}) {
   const agents = new Map();            // agentId → { turn, ended, last }
   const lastSeen = new Map();          // agentId → newest event time (any type)
   const users = [];                    // every user.message, for the delivery source
-  const written = new Map();           // turn → Set of the paths its write tools named (as written)
+  const written = new Map();           // turn → Set of the paths its write tools named (resolved against the cwd then)
   let root = null;                     // session.start/resume context: gitRoot, else cwd
+  let cwd = null;                      // session.start/resume context: what a relative path is relative to
   let last = null;                     // the newest turn, for events that name no interaction
 
   const turnFor = (iid) => (iid && byInteraction.get(iid)) || last;
@@ -95,7 +85,7 @@ export function foldEvents({ now = Date.now } = {}) {
     const block = { kind: "tool", id, name: name || "tool", label: toolLabel(name, args), input: pretty(args) };
     t.blocks.push(block);
     toolOf.set(id, { turn: t, block });
-    wrote(t, writtenPaths(name, args));
+    wrote(t, callFiles(name, args, cwd)); // from the raw arguments, before `pretty` cuts them
     if (name === "task") {
       const type = str(args?.agent_type)?.trim() || "(no type)";
       const list = (t.agentTypes ??= []);
@@ -134,6 +124,7 @@ export function foldEvents({ now = Date.now } = {}) {
         const c = d.context && typeof d.context === "object" ? d.context : {};
         const r = str(c.gitRoot) || str(c.cwd);
         if (r) root = r.replace(/\/+$/, "");
+        if (str(c.cwd)) cwd = c.cwd;
         return;
       }
       case "user.message": {
@@ -185,7 +176,7 @@ export function foldEvents({ now = Date.now } = {}) {
           e.block.result = content.length > RESULT_MAX ? content.slice(0, RESULT_MAX) : content;
           if (content.length > RESULT_MAX) e.block.resultTruncated = true;
         }
-        if (Array.isArray(d.fileEdits)) wrote(e.turn, d.fileEdits.map((x) => str(x?.path)).filter(Boolean));
+        if (Array.isArray(d.fileEdits)) wrote(e.turn, d.fileEdits.map((x) => resolvePath(str(x?.path), cwd)).filter(Boolean));
         touch(e.turn, at);
         return;
       }

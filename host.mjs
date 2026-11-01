@@ -26,6 +26,7 @@ import { createSlots } from "./slots.mjs";
 import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
 import { createAttach, noteHook } from "./channel.mjs";
 import { createDialogs, hookAskRuleHit, RULE_LABEL } from "./dialogs.mjs";
+import { isShellTool } from "./toolcalls.mjs";
 import { copilotHome } from "./paths.mjs";
 import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
@@ -337,7 +338,7 @@ export function activate(api) {
   const ruleAllows = rulesOn ? (slot, payload) => {
     const tool = typeof payload?.toolName === "string" ? payload.toolName : "";
     const command = typeof payload?.toolInput?.command === "string" ? payload.toolInput.command : "";
-    if (!slot.hostId || !command || !["bash", "shell", "powershell"].includes(tool)) return null;
+    if (!slot.hostId || !command || !isShellTool(tool)) return null;
     let r;
     try { r = api.ruleAllows(slot.hostId, command, "Copilot asked again for the exact command line the rule covers"); } catch { return null; }
     if (!r?.ok) return null;
