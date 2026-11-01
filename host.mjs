@@ -33,6 +33,7 @@ import { readModels } from "./models.mjs";
 import { createDeliverySource, createTranscriptSource } from "./transcript.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createContextSource } from "./context.mjs";
+import { createOtelReader } from "./otel.mjs";
 import { createConversationSource } from "./conversations.mjs";
 import { copilotSignIn, signInRow } from "./setup.mjs";
 import { createLogSources, createSessionLog } from "./sessionlog.mjs";
@@ -249,7 +250,7 @@ export function makeHookHandler({ router, dialogs, now = Date.now, attended = ()
 }
 
 /** The backend definition handed to `api.backend`. Exported for tests. */
-export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null, home = null, launches = null }) {
+export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context = null, home = null, launches = null, otel = null }) {
   const tail = (p, on, o) => api.tail(p, on, o);
   const env = (k) => api.env(k);
   // COPILOT_HOME is resolved ONCE (activate) and every consumer reads that one value: the ledger
@@ -263,7 +264,9 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
   const sessionLog = createSessionLog({ home, idOf, tail });
   router.setForkReader?.((ss) => sessionLog.forkOf(ss));
   const ls = createLogSources(sessionLog);
-  const ledger = createLedger({ home, otelDir, tail });
+  // ONE span reader for the ledger and the context gauge: one follower per span file, not two.
+  otel ??= createOtelReader(otelDir, { tail, maxWindows: 1 });
+  const ledger = createLedger({ home, otelDir, tail, otel });
   return {
     id: BACKEND_ID,
     label: "GitHub Copilot",
@@ -290,7 +293,7 @@ export function copilotBackend({ api, router, dialogs, pluginDir, otelDir, refre
       transcript: createTranscriptSource({ home, idOf, tail }),
       delivery: createDeliverySource({ home, idOf, tail, onSend: (ss, text) => router.noteSent(router.peek(ss.id), text) }),
       tokens: { ledger: (maxAgeMs) => ledger.ledger(maxAgeMs), session: ls.tokens.session },
-      context: withLog(context ?? createContextSource({ otelDir, home, idOf, tail }), ls),
+      context: withLog(context ?? createContextSource({ otelDir, home, idOf, tail, otel }), ls),
       mode: ls.mode,
       plan: ls.plan,
       agents: ls.agents,
@@ -331,10 +334,12 @@ export function activate(api) {
     onAnswered: (slot, a) => { if (a.choice === 2 && a.phase === "hook") setImmediate(() => showRules(api, slot)); },
     onAbort: (slot, at) => { if (!slot.state.inTurn) return; slot.state.inTurn = false; emitTurn(slot, { edge: "ended", at }); },
   });
+  const otel = createOtelReader(otelDir, { tail: (p, on, o) => api.tail(p, on, o), maxWindows: 1 });
   const context = createContextSource({
-    otelDir: join(api.dataDir, "otel"), home: () => home,
+    otelDir, home: () => home,
     idOf: (ss) => router.idOf(ss),
     tail: (p, on, o) => api.tail(p, on, o),
+    otel,
   });
   // `PluginSession.watched` = a phone is looking at the session now; `mayAnswer` = the core's gate may
   // answer for the plugin. Unknown session (null) keeps the hold: cannot say is not "nobody".
@@ -364,7 +369,7 @@ export function activate(api) {
     showStatus();
   });
 
-  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context, home, launches }));
+  api.backend(copilotBackend({ api, router, dialogs, pluginDir, otelDir, refreshHooks, context, home, launches, otel }));
   api.on("action", (e) => {
     if (e.action !== FORGET_ACTION) return { ok: false, message: `unknown action ${e.action}` };
     if (!rulesOn) return { ok: false, message: "This waterplane keeps no allow rules (it is older than standing rules)." };

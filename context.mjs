@@ -15,7 +15,7 @@
  *      — the one-turn lag this ordering removes. It still counts when it is
  *      newer (a call after the last checkpoint, or no checkpoint at all).
  *
- *   createContextSource({ otelDir, home, idOf?, tail })
+ *   createContextSource({ otelDir, home, idOf?, tail, otel? })  (otel: the shared span reader)
  *     → { sample(ss) }
  *
  * The WINDOW is not this source's to say: Copilot shows it only on `/context`
@@ -44,8 +44,11 @@ export function checkpointSample(e) {
   return { at, usedTok: used, model: typeof m.model === "string" && m.model ? m.model : model };
 }
 
-export function createContextSource({ otelDir, home, idOf, tail } = {}) {
-  const otel = createOtelReader(otelDir, { tail });
+/** A context sample reads up to this many 1 MiB windows of each span file (the newest span, now). */
+export const CONTEXT_WINDOWS = 64;
+
+export function createContextSource({ otelDir, home, idOf, tail, otel = null } = {}) {
+  otel ??= createOtelReader(otelDir, { tail });
   const homeDir = () => (typeof home === "function" ? home() : home);
   /** Copilot session id → { tail, last, lastTs } over its events.jsonl, checkpoint lines only. */
   const cps = new Map();
@@ -74,7 +77,7 @@ export function createContextSource({ otelDir, home, idOf, tail } = {}) {
     sample(ss) {
       const id = idFor(ss);
       if (!id) return null;
-      otel.refresh();
+      otel.refresh(CONTEXT_WINDOWS);
       const c = otel.last(id);
       const fromSpan = c && c.input != null && c.at != null ? { at: c.at, usedTok: c.input, ...(c.model ? { model: c.model } : {}) } : null;
       const cp = checkpoint(id)?.last ?? null;

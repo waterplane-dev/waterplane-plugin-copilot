@@ -55,7 +55,11 @@ export function chatOf(span) {
  */
 export const SPAN_KEEP_MS = 50 * 24 * 3_600_000;
 
-/** A reader over one directory of per-launch span files. */
+/**
+ * A reader over one directory of per-launch span files. ONE per plugin (host.mjs), shared by the
+ * ledger (its `catchUp`, 1 MiB steps between yields) and the context gauge (`refresh(64)`, the
+ * newest span now): two readers held every span twice and could each evict on their own.
+ */
 /** `tail` is the host's `api.tail`; `maxWindows` its 1 MiB windows per file per refresh. */
 export function createOtelReader(dir, { tail, now = Date.now, maxWindows } = {}) {
   /** path → { tail, chats[] } */
@@ -112,11 +116,11 @@ export function createOtelReader(dir, { tail, now = Date.now, maxWindows } = {})
     }
   }
   return {
-    /** Read what is new in every file (up to `maxWindows` each); false when the dir is absent. */
-    refresh() {
+    /** Read what is new in every file (up to `windows`, default `maxWindows`, each); false when the dir is absent. */
+    refresh(windows) {
       const live = list();
       if (!live) return false;
-      for (const f of live) { f.tail.advance(); f.read = true; }
+      for (const f of live) { f.tail.advance(windows); f.read = true; }
       evict();
       return true;
     },

@@ -2,7 +2,8 @@
  * What Copilot spent, in its OWN unit (`TokenSource`), served at
  * `GET /api/tokenstats/copilot`.
  *
- *   createLedger({ home, otelDir, tail }) → { ledger(maxAgeMs): Promise<BackendTokensDoc> }
+ *   createLedger({ home, otelDir, tail, otel? }) → { ledger(maxAgeMs): Promise<BackendTokensDoc> }
+ *   (otel: the shared span reader; when given, ITS clock evicts spans, not `now`)
  *
  * Two measured sources, never blended into one number:
  * - `session.usage_checkpoint` in each `events.jsonl` (once per prompt, after
@@ -63,10 +64,10 @@ export function kindsOf(c) {
   return k;
 }
 
-export function createLedger({ home, otelDir, tail, now = Date.now } = {}) {
+export function createLedger({ home, otelDir, tail, now = Date.now, otel = null } = {}) {
   // one 1 MiB window per synchronous step: a long first read yields to the event loop between
   // windows (see catchUp), and every file is read to its end before the doc is built
-  const otel = createOtelReader(otelDir, { tail, now, maxWindows: 1 });
+  otel ??= createOtelReader(otelDir, { tail, now, maxWindows: 1 });
   /** events.jsonl path → { tail, id, checkpoints[], starts[] } (starts: session.start/resume times) */
   const sessions = new Map();
   let cached = null, pending = null;

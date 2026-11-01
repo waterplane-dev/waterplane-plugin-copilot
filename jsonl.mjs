@@ -12,7 +12,8 @@
  *  - `size` / `mtimeMs` of the last read, for the transcript's change stamp;
  *  - `more`: the last `advance()` stopped at its window cap, so unread bytes may remain.
  *
- * `advance()` drains: it asks the follower until it has nothing new (at most `maxWindows`), and
+ * `advance(windows = maxWindows)` drains: it asks the follower until it has nothing new (at most
+ * `windows` — one shared follower serves a reader that steps 1 MiB and one that takes 64), and
  * answers true when something was read, false when nothing was new, null when the file is absent.
  */
 import { statSync } from "node:fs";
@@ -28,7 +29,7 @@ export function follow(tail, path, onLine, { filter, onReset, maxWindows = MAX_W
   const open = () => tail(path, onLine, filter ? { filter } : undefined);
   const reset = () => { try { onReset?.(); } catch { /* the fold's own */ } };
   const state = { path, size: 0, mtimeMs: 0, more: false };
-  state.advance = () => {
+  state.advance = (windows = maxWindows) => {
     let st;
     try { st = statSync(path); } catch (e) { readFailed(e, "statting a tailed log", path); state.more = false; return null; }
     if (t && ((ino != null && st.ino !== ino) || st.size < t.offset())) { reset(); t.close(); t = null; }
@@ -38,7 +39,7 @@ export function follow(tail, path, onLine, { filter, onReset, maxWindows = MAX_W
     if (!t) t = open();
     let read = false, restarted = false;
     state.more = false;
-    for (let i = 0; i < maxWindows; i++) {
+    for (let i = 0; i < windows; i++) {
       const off = t.offset();
       const r = t.advance();
       // replaced (or truncated) between the stat above and the follower's own open: what it just
@@ -54,7 +55,7 @@ export function follow(tail, path, onLine, { filter, onReset, maxWindows = MAX_W
         read = true;
         continue;
       }
-      if (r === true) { read = true; if (i === maxWindows - 1) state.more = true; continue; }
+      if (r === true) { read = true; if (i === windows - 1) state.more = true; continue; }
       if (r === null && !read) return null;
       break;
     }
