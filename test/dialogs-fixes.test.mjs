@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSlots } from "../slots.mjs";
@@ -103,6 +103,44 @@ test("D1: a hook-phase box whose (wrong) call completes keeps its hold and forge
   assert.equal(r.slot.state.dialogs.open.get("call_X").toolCallId, null);
   assert.deepEqual(await r.asked[0].answer(1), { ok: true });
   assert.deepEqual(await held, { behavior: "allow" });
+  r.off();
+});
+
+test("quiet replay notifies the host when it finds a published dialog's completion", async () => {
+  const r = rig();
+  r.tick();
+  const id = "call_REPLACED";
+  r.append(start(id, "bash", { command: "touch a.txt" }), shellRequested(id, "touch a.txt"));
+  r.tick();
+  assert.deepEqual(await r.ids(), [id]);
+
+  const completed = JSON.stringify({ type: "permission.completed", data: { requestId: `req-${id}`, toolCallId: id } });
+  writeFileSync(r.file, `${completed}\n`);
+
+  r.tick();
+  assert.deepEqual(r.resolved, [id]);
+  assert.deepEqual(await r.ids(), []);
+  r.off();
+});
+
+test("a replaced events log larger than its old offset is re-read from the beginning", async () => {
+  const r = rig();
+  r.tick();
+  const id = "call_REPLACED";
+  r.append(start(id, "bash", { command: "touch a.txt" }), shellRequested(id, "touch a.txt"));
+  r.tick();
+  assert.deepEqual(await r.ids(), [id]);
+
+  const offset = r.slot.state.dialogs.offset;
+  const completed = JSON.stringify({ type: "permission.completed", data: { requestId: `req-${id}`, toolCallId: id } });
+  const replacement = `${r.file}.next`;
+  writeFileSync(replacement, `${completed}\n${" ".repeat(offset + 1)}\n`);
+  renameSync(replacement, r.file);
+  assert.ok(statSync(r.file).size > offset, "replacement is larger than the old offset, with completion before it");
+
+  r.tick();
+  assert.deepEqual(r.resolved, [id]);
+  assert.deepEqual(await r.ids(), []);
   r.off();
 });
 

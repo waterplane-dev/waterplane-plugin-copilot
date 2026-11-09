@@ -21,7 +21,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { binFound, buildLaunch, PERMISSION_MODES, resolveBin, SPAWN_ENV } from "./launch.mjs";
-import { hookKey, hookTimeoutSec, parseHookPost, sealHookHandler, writePluginDir } from "./hooks.mjs";
+import { hookKey, parseHookPost, sealHookHandler, writePluginDir } from "./hooks.mjs";
 import { DELIVERY } from "./delivery.mjs";
 import { createSlots } from "./slots.mjs";
 import { createTurnSource, emitTurn, turnEdge } from "./turns.mjs";
@@ -429,7 +429,7 @@ export function activate(api) {
   api.setupCheck(() => signInRow(copilotSignIn((k) => api.env(k))));
   const bin = resolveBin((k) => api.env(k));
   showStatus = () => api.setStatus(binFound(bin)
-    ? { tone: "ok", text: `copilot at ${bin}; hooks time out at ${hookTimeoutSec(holdMs)} s, the phone holds ${holdMs / 1000} s` }
-    : { tone: "warn", text: "no copilot on PATH — install GitHub Copilot CLI or set COPILOT_CLI_BIN" });
+    ? { tone: "ok", text: `Ready: uses the copilot program at ${bin}. A permission question waits ${holdMs / 1000} s for your tap, then Copilot asks at the desktop terminal instead.` }
+    : { tone: "warn", text: "Not ready: the copilot program was not found. Install GitHub Copilot CLI, or set COPILOT_CLI_BIN to its path." });
   showStatus();
 }

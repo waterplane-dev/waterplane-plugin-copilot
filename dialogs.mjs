@@ -387,8 +387,10 @@ function readLines(path, from, max, dropFirst = false) {
   let fd;
   try { fd = openSync(path, "r"); } catch (e) { readFailed(e, "opening the session log", path); return null; }
   try {
-    const size = fstatSync(fd).size;
-    if (from != null && from > size) return { reset: true };
+    const stat = fstatSync(fd);
+    const size = stat.size;
+    const fileIdentity = `${stat.dev}:${stat.ino}`;
+    if (from != null && from > size) return { reset: true, fileIdentity, size };
     const start = from == null ? Math.max(0, size - max) : from;
     const len = Math.min(size - start, max);
     const buf = Buffer.alloc(len);
@@ -403,7 +405,7 @@ function readLines(path, from, max, dropFirst = false) {
     let lo = 0;
     if (partial) {
       const nl = b.indexOf(0x0a);
-      if (nl < 0) return { lines: [], next: start + got, skipping: true };
+      if (nl < 0) return { lines: [], next: start + got, skipping: true, fileIdentity, size };
       lo = nl + 1;
     }
     const hi = b.lastIndexOf(0x0a);
@@ -411,10 +413,10 @@ function readLines(path, from, max, dropFirst = false) {
       // A whole window with no newline: one oversized line — skip it rather than re-read it forever.
       // Past a dropped part, the next line starts at `lo` (or the window ended on that newline): read
       // from there, never skip — a skip would drop the next line, which may be whole.
-      if (lo === 0 && got >= max) return { lines: [], next: start + got, skipping: true };
-      return { lines: [], next: start + lo };
+      if (lo === 0 && got >= max) return { lines: [], next: start + got, skipping: true, fileIdentity, size };
+      return { lines: [], next: start + lo, fileIdentity, size };
     }
-    return { lines: b.subarray(lo, hi).toString("utf8").split("\n"), next: start + hi + 1 };
+    return { lines: b.subarray(lo, hi).toString("utf8").split("\n"), next: start + hi + 1, fileIdentity, size };
   } finally { closeSync(fd); }
 }
 
@@ -423,7 +425,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
   let minted = 0;
 
   /** Per-slot state: open dialogs by id (insertion order = the order Copilot asked) and the events tail. */
-  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, timer: null, recent: [], asks: new Set(), told: 0, questions: new Map(), trust: null });
+  const st = (slot) => (slot.state.dialogs ??= { open: new Map(), offset: null, fileIdentity: null, size: null, timer: null, recent: [], asks: new Set(), told: 0, questions: new Map(), trust: null });
   const keysThen = () => (typeof keysThenTyped === "function" ? !!keysThenTyped() : !!keysThenTyped);
 
   const emit = (slot, fn) => { for (const w of slot.dialogs) { try { fn(w); } catch { /* the host's fault */ } } };
@@ -576,12 +578,15 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
 
   // ── events.jsonl ────────────────────────────────────────────────────────
 
-  /** One events.jsonl line. `quiet` = catching up on history: change state, tell nobody. */
-  function onEvent(slot, e, quiet = false) {
+  /** One events.jsonl line. `quiet` suppresses replayed asks, but not closure of a dialog already published. */
+  function onEvent(slot, e, quiet = false, openBefore = null) {
     if (!e || typeof e !== "object") return;
     const d = e.data && typeof e.data === "object" ? e.data : {};
     const s = st(slot);
-    const drop = (r) => { if (quiet) { r.phase = "done"; s.open.delete(r.id); } else retire(slot, r); };
+    const drop = (r) => {
+      if (quiet && !openBefore?.has(r)) { r.phase = "done"; r.settle = null; s.open.delete(r.id); }
+      else retire(slot, r);
+    };
     switch (e.type) {
       case "permission.requested": {
         const pr = d.permissionRequest && typeof d.permissionRequest === "object" ? d.permissionRequest : {};
@@ -681,9 +686,18 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
     if (!slot.id) return [];
     const s = st(slot);
     const first = s.offset == null;
+    const openBefore = new Set(s.open.values()); // a replayed completion must retire boxes the host already saw
     const r = readLines(eventsPath(homeDir(), slot.id), s.offset, first ? TAIL_BYTES : 4 * 1024 * 1024, !first && !!s.skip);
     if (!r) return [];
-    if (r.reset) { s.offset = null; s.skip = false; return readTail(slot); } // truncated or replaced: start again at the tail
+    if (r.reset || (s.fileIdentity != null && r.fileIdentity !== s.fileIdentity) || (s.size != null && r.size < s.size)) {
+      s.offset = null;
+      s.skip = false;
+      s.fileIdentity = r.fileIdentity;
+      s.size = null;
+      return readTail(slot); // truncated or replaced: start again at the tail
+    }
+    s.fileIdentity = r.fileIdentity;
+    s.size = r.size;
     s.offset = r.next;
     s.skip = !!r.skipping;
     const out = [];
@@ -694,7 +708,7 @@ export function createDialogs({ router, home, pollMs = EVENTS_POLL_MS, toolCallW
       out.push(e);
       // The tool calls a later permission hook may be about — whichever read saw them (the poll or the hook).
       if (TOOL_EVENTS.has(e.type)) { s.recent.push(e); if (s.recent.length > 64) s.recent.shift(); }
-      onEvent(slot, e, first);
+      onEvent(slot, e, first, openBefore);
     }
     return out;
   }

@@ -137,9 +137,9 @@ test("H4: a hold is capped at the posting runner's own wait, and onExpired still
 test("H4: changing the hold re-says the status line with the new numbers", () => {
   const api = makeFakeApi({ env: { COPILOT_CLI_BIN: process.execPath } });
   host.activate(api);
-  assert.match(api._calls.setStatus.at(-1).text, /time out at 10 s, the phone holds 8 s/);
+  assert.match(api._calls.setStatus.at(-1).text, /waits 8 s for your tap/);
   api._setSettings({ holdMs: 15000 });
-  assert.match(api._calls.setStatus.at(-1).text, /time out at 17 s, the phone holds 15 s/);
+  assert.match(api._calls.setStatus.at(-1).text, /waits 15 s for your tap/);
 });
 
 // A session launched before the key file (10-29) keeps a hooks.json with no key-file arg, and runs

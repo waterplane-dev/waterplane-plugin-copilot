@@ -1,4 +1,15 @@
-# GitHub Copilot CLI backend
+# GitHub Copilot CLI
+
+This lets you start GitHub Copilot CLI sessions from the phone, in any repo, and type into them like at the desktop. When Copilot asks permission to run something, the question appears on the phone and waits a few seconds for your tap. If you do not tap in time, Copilot asks at the desktop terminal instead. It needs the `copilot` program installed on the desktop and signed in. It changes nothing in `~/.copilot` and writes nothing to the repo.
+
+## Where to find it
+- **Launcher** — "GitHub Copilot CLI" is a program you can pick when you start a new session.
+- **Settings, Plugins, GitHub Copilot CLI** — "Permission hold" is how many milliseconds a permission question waits for your tap (default 8000, which is 8 seconds).
+
+## Settings
+- **Permission hold** — how long a permission question waits on the phone before Copilot shows its own question at the desktop terminal. A session already running keeps the wait it started with.
+
+## For developers
 
 A plugin for [waterplane](https://waterplane.dev), the phone remote that drives coding CLIs in a terminal on
 your desktop. It adds **GitHub Copilot CLI** as a backend: the launcher can start a Copilot session
